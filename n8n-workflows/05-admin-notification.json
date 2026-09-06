@@ -1,0 +1,92 @@
+{
+  "name": "05 - Admin Notification",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [180, 300],
+      "notes": "يُستدعى من أي Workflow ينقل طلباً إلى PENDING_ADMIN_REVIEW: '04 - Payment Proof Processing' (بعد إثبات تحويل) أو '03 - Order Creation' (بعد اختيار الدفع عند الاستلام).",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "order_id", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_order",
+      "name": "Get Order Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$json.order_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_build_payload",
+      "name": "Build Notification Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [620, 300],
+      "notes": "يفترض أن الـ Backend يُرفق اسماً معروضاً (variant_name) أو SKU لكل عنصر في الطلب لسهولة القراءة داخل الإشعار.",
+      "parameters": {
+        "jsCode": "const order = $input.item.json;\nconst customerName = (order.customer && order.customer.full_name) ? order.customer.full_name : 'عميل';\nconst itemsSummary = (Array.isArray(order.items) && order.items.length > 0)\n  ? order.items.map(it => it.variant_name || it.sku || 'منتج').join('، ')\n  : 'طلب';\nconst amount = (order.total_amount !== null && order.total_amount !== undefined) ? order.total_amount : '';\n\nconst title = 'طلب جديد بانتظار المراجعة';\nconst body = `${customerName} — ${itemsSummary}${amount !== '' ? ' — ' + amount : ''}`;\n\nreturn [{ json: { order_id: order.id, title, body } }];"
+      }
+    },
+    {
+      "id": "node_send_push",
+      "name": "Send Admin Push Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 300],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "نقطة نهاية تكميلية صغيرة (POST /admin/notifications) — الـ Backend يتولى إرسالها فعلياً عبر خدمة الدفع (FCM/APNs) لأجهزة الأدمن المسجّلة، فتبقى مفاتيح تلك الخدمة مركزية ولا تُشارَك مع n8n. تكرار محتمل عند إعادة المحاولة غير ضار هنا (مجرد إشعار مكرر للأدمن وليس رسالة للعميل).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/admin/notifications",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"type\": \"order_pending_review\", \"order_id\": $json.order_id, \"title\": $json.title, \"body\": $json.body, \"data\": { \"order_id\": $json.order_id } } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [[{ "node": "Get Order Detail", "type": "main", "index": 0 }]]
+    },
+    "Get Order Detail": {
+      "main": [[{ "node": "Build Notification Payload", "type": "main", "index": 0 }]]
+    },
+    "Build Notification Payload": {
+      "main": [[{ "node": "Send Admin Push Notification", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

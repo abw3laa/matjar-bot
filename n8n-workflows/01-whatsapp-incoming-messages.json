@@ -1,0 +1,507 @@
+{
+  "name": "01 - WhatsApp Incoming Messages",
+  "nodes": [
+    {
+      "id": "node_webhook_verify_get",
+      "name": "WhatsApp Webhook - Verify (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        100
+      ],
+      "notes": "مسار التحقق الذي يستدعيه Meta عند ربط الـ Webhook لأول مرة (hub.mode=subscribe). اضبط نفس path في إعدادات Facebook App: /whatsapp/webhook",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "whatsapp/webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_verify_token_match",
+      "name": "Verify Token Match?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        460,
+        100
+      ],
+      "notes": "يقارن hub.verify_token الوارد من Meta مع القيمة السرية المخزنة في n8n Environment Variable باسم WHATSAPP_VERIFY_TOKEN.",
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.query[\"hub.verify_token\"]}}",
+              "value2": "={{$env.WHATSAPP_VERIFY_TOKEN}}",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_respond_verified",
+      "name": "Respond - Verified",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        40
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{$json.query[\"hub.challenge\"]}}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_respond_forbidden",
+      "name": "Respond - Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        160
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      }
+    },
+    {
+      "id": "node_webhook_events_post",
+      "name": "WhatsApp Webhook - Events (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        380
+      ],
+      "notes": "نفس الـ path السابق (whatsapp/webhook) لكن لطلبات POST — هنا تصل رسائل العملاء الفعلية من WhatsApp Cloud API.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp/webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond_event_received",
+      "name": "Respond - Event Received",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        380
+      ],
+      "notes": "مهم: يجب الرد على Meta بسرعة (خلال ثوانٍ) وإلا تُعاد المحاولة أو يُعتبر الـ Webhook معطلاً. لهذا نرد فوراً هنا ثم نكمل المعالجة في الخلفية بنفس التنفيذ.",
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "EVENT_RECEIVED",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_extract_message",
+      "name": "Extract WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        380
+      ],
+      "notes": "يفكك بنية payload الخاصة بـ WhatsApp Cloud API ويتجاهل status callbacks (delivered/read) التي لا تحتوي messages فعلية. ملاحظة: كل العقد اللاحقة تشير إلى 'Has Message Content؟' بالاسم (وليس لهذه العقدة مباشرة) لأنها نقطة التقاء آمنة يمر منها مسارا Meta وEvolution معاً.",
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst entry = body && body.entry ? body.entry[0] : undefined;\nconst change = entry && entry.changes ? entry.changes[0] : undefined;\nconst value = change ? change.value : undefined;\n\nif (!value || !value.messages || value.messages.length === 0) {\n  return [{ json: { ignore: true, reason: 'no_message_content' } }];\n}\n\nconst message = value.messages[0];\nconst contact = value.contacts ? value.contacts[0] : undefined;\nconst mediaTypes = ['image', 'document', 'audio', 'video', 'sticker'];\n\nconst parsed = {\n  ignore: false,\n  wa_id: (contact && contact.wa_id) ? contact.wa_id : message.from,\n  from: message.from,\n  contact_name: (contact && contact.profile) ? contact.profile.name : null,\n  message_id: message.id,\n  timestamp: message.timestamp,\n  type: message.type,\n  text: message.text ? message.text.body : null,\n  media_id: (mediaTypes.includes(message.type) && message[message.type]) ? message[message.type].id : null,\n  media_mime_type: (mediaTypes.includes(message.type) && message[message.type]) ? message[message.type].mime_type : null\n};\n\nreturn [{ json: parsed }];"
+      }
+    },
+    {
+      "id": "node_has_message_content",
+      "name": "Has Message Content?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        900,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.ignore}}",
+              "value2": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_noop_ignore_status",
+      "name": "No Operation - Ignore Status Callback",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        480
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "node_resolve_conversation",
+      "name": "Resolve Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "notes": "يبحث عن customer_channel_identity + conversation المرتبطة بهذا wa_id، أو ينشئهما إذا لم يوجدا (find-or-create).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/conversations/resolve",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"channel\": \"whatsapp\", \"channel_user_id\": $json.wa_id, \"customer_phone\": $json.from, \"customer_name\": $json.contact_name } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_log_inbound_message",
+      "name": "Log Inbound Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"conversation_id\": $('Resolve Conversation').item.json.conversation_id, \"direction\": \"inbound\", \"sender\": \"customer\", \"content\": $('Has Message Content?').item.json.text, \"message_type\": $('Has Message Content?').item.json.type, \"media_id\": $('Has Message Content?').item.json.media_id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_is_text_message",
+      "name": "Is Text Message?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        320
+      ],
+      "notes": "الرسائل النصية → محادثة AI. الرسائل بمرفقات (صورة/PDF) → Workflow معالجة إثبات التحويل بشكل منفصل (حسب تقسيم Workflows في التصميم).",
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$('Has Message Content?').item.json.type}}",
+              "value2": "text",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_execute_ai_conversation",
+      "name": "Execute - AI Conversation Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        260
+      ],
+      "notes": "بعد استيراد Workflow '02 - WhatsApp AI Conversation'، افتح هذه العقدة واختره من القائمة المنسدلة.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "02 - WhatsApp AI Conversation"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "conversation_id": "={{$('Resolve Conversation').item.json.conversation_id}}",
+            "wa_id": "={{$('Has Message Content?').item.json.wa_id}}",
+            "message_text": "={{$('Has Message Content?').item.json.text}}",
+            "message_id": "={{$('Has Message Content?').item.json.message_id}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_execute_payment_proof",
+      "name": "Execute - Payment Proof Processing Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        400
+      ],
+      "notes": "بعد استيراد Workflow '04 - Payment Proof Processing'، افتح هذه العقدة واختره من القائمة المنسدلة.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "04 - Payment Proof Processing"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "conversation_id": "={{$('Resolve Conversation').item.json.conversation_id}}",
+            "wa_id": "={{$('Has Message Content?').item.json.wa_id}}",
+            "media_id": "={{$('Has Message Content?').item.json.media_id}}",
+            "media_mime_type": "={{$('Has Message Content?').item.json.media_mime_type}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_webhook_evolution_events",
+      "name": "Evolution Webhook - Events (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        620
+      ],
+      "notes": "مسار الأحداث الخاص بالعقدة الاحتياطية (Evolution API/QR) — منفصل عن مسار Meta لأن شكل الحمولة مختلف تماماً. اضبط نفس هذا الرابط كـ webhook.url عند إنشاء الـ instance في Evolution، ويُفعَّل هذا المسار فقط عندما WHATSAPP_PROVIDER=evolution_api.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp/webhook/evolution",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond_evolution_event",
+      "name": "Respond - Evolution Event Received",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        620
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_extract_evolution_message",
+      "name": "Extract Evolution Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        620
+      ],
+      "notes": "يوحّد مخرجات Evolution API لتطابق تماماً شكل مخرجات 'Extract WhatsApp Message' (نفس الحقول بالضبط)، لذا تتغذى كلتا العقدتين على نفس منطق 'Has Message Content?' وما بعده بلا أي تعديل إضافي. ملاحظة مهمة: media_id هنا هو معرّف رسالة Evolution وليس معرّف وسائط بأسلوب Meta — يحتاج Workflow 04 (Payment Proof Processing) تعديلاً منفصلاً لدعم تنزيل الوسائط من Evolution تحديداً قبل الاعتماد الكامل على هذا المسار لاستقبال إثباتات التحويل.",
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\n\nif (!body || body.event !== 'messages.upsert' || !body.data) {\n  return [{ json: { ignore: true, reason: 'not_a_new_message_event' } }];\n}\n\nconst data = body.data;\nif (!data.key || data.key.fromMe) {\n  return [{ json: { ignore: true, reason: 'own_message_or_missing_key' } }];\n}\n\nconst remoteJid = data.key.remoteJid || '';\nconst waId = remoteJid.split('@')[0];\nconst msg = data.message || {};\n\nlet type = null, text = null, mediaId = null, mediaMimeType = null;\n\nif (msg.conversation) {\n  type = 'text';\n  text = msg.conversation;\n} else if (msg.extendedTextMessage && msg.extendedTextMessage.text) {\n  type = 'text';\n  text = msg.extendedTextMessage.text;\n} else if (msg.imageMessage) {\n  type = 'image';\n  text = msg.imageMessage.caption || null;\n  mediaMimeType = msg.imageMessage.mimetype || 'image/jpeg';\n  mediaId = data.key.id;\n} else if (msg.documentMessage) {\n  type = 'document';\n  text = msg.documentMessage.caption || null;\n  mediaMimeType = msg.documentMessage.mimetype || 'application/pdf';\n  mediaId = data.key.id;\n}\n\nif (!type) {\n  return [{ json: { ignore: true, reason: 'unsupported_message_subtype' } }];\n}\n\nreturn [{ json: {\n  ignore: false,\n  wa_id: waId,\n  from: waId,\n  contact_name: data.pushName || null,\n  message_id: data.key.id,\n  timestamp: data.messageTimestamp || null,\n  type,\n  text,\n  media_id: mediaId,\n  media_mime_type: mediaMimeType\n} }];"
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook - Verify (GET)": {
+      "main": [
+        [
+          {
+            "node": "Verify Token Match?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token Match?": {
+      "main": [
+        [
+          {
+            "node": "Respond - Verified",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WhatsApp Webhook - Events (POST)": {
+      "main": [
+        [
+          {
+            "node": "Respond - Event Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond - Event Received": {
+      "main": [
+        [
+          {
+            "node": "Extract WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Has Message Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Message Content?": {
+      "main": [
+        [
+          {
+            "node": "Resolve Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation - Ignore Status Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Conversation": {
+      "main": [
+        [
+          {
+            "node": "Log Inbound Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Inbound Message": {
+      "main": [
+        [
+          {
+            "node": "Is Text Message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Text Message?": {
+      "main": [
+        [
+          {
+            "node": "Execute - AI Conversation Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Execute - Payment Proof Processing Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evolution Webhook - Events (POST)": {
+      "main": [
+        [
+          {
+            "node": "Respond - Evolution Event Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond - Evolution Event Received": {
+      "main": [
+        [
+          {
+            "node": "Extract Evolution Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Evolution Message": {
+      "main": [
+        [
+          {
+            "node": "Has Message Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

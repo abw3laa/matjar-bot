@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Matjar Admin",
+    "slug": "matjar-bot-admin-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "backgroundColor": "#0F172A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.matjarbot.admin"
+    },
+    "android": {
+      "package": "com.matjarbot.admin",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      }
+    }
+  }
+}

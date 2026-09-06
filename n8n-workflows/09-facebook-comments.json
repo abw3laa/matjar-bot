@@ -1,0 +1,407 @@
+{
+  "name": "09 - Facebook & Instagram Comments",
+  "nodes": [
+    {
+      "id": "node_webhook_verify",
+      "name": "Verify Webhook (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        100
+      ],
+      "notes": "نفس آلية تحقق Meta المستخدمة مع WhatsApp — لكن بمسار منفصل ورمز تحقق قد يختلف: FACEBOOK_VERIFY_TOKEN.",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "facebook/comments-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_verify_token_match",
+      "name": "Verify Token Match?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        400,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.query[\"hub.verify_token\"]}}",
+              "value2": "={{$env.FACEBOOK_VERIFY_TOKEN}}",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_respond_verified",
+      "name": "Respond - Verified",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        620,
+        40
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{$json.query[\"hub.challenge\"]}}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_respond_forbidden",
+      "name": "Respond - Forbidden",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        620,
+        160
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      }
+    },
+    {
+      "id": "node_webhook_events",
+      "name": "Events Webhook (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        380
+      ],
+      "notes": "يستقبل أحداث 'feed' من صفحة Facebook (تعليقات، ردود، إلخ) — نفلتر لاحقاً ما هو تعليق جديد فعلاً.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "facebook/comments-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond_event_received",
+      "name": "Respond - Event Received",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        400,
+        380
+      ],
+      "notes": "رد فوري لـ Meta ثم متابعة المعالجة في الخلفية — نفس مبدأ Workflow 01.",
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "EVENT_RECEIVED",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_extract_comment",
+      "name": "Extract Comment Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        380
+      ],
+      "notes": "يتعرّف على المنصة من body.object ('page' = Facebook، 'instagram' = Instagram) ويستخرج الحقول تبعاً لذلك. is_relevant تتحقق من: الحدث تعليق فعلي، إضافة جديدة، والمُعلِّق ليس الصفحة/الحساب نفسه (لمنع حلقة لا نهائية عند الرد التلقائي). قيد مهم خاص بإنستغرام تحديداً: الرسالة الخاصة (private reply) لا يمكن إرسالها بعد مرور 7 أيام على التعليق — قيد من Meta نفسها وليس تصميماً هنا.",
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst entry = body && body.entry ? body.entry[0] : undefined;\nconst change = entry && entry.changes ? entry.changes[0] : undefined;\nconst value = change ? change.value : undefined;\nconst platform = body && body.object === 'instagram' ? 'instagram' : 'facebook';\n\nlet isCommentAdd, senderId, senderName, commentId, postId, commentText, isFromSelf;\n\nif (platform === 'instagram') {\n  isCommentAdd = !!(value && change.field === 'comments');\n  senderId = value ? (value.from && value.from.id) : null;\n  senderName = value ? (value.from && value.from.username) : null;\n  commentId = value ? value.id : null;\n  postId = value ? (value.media && value.media.id) : null;\n  commentText = value ? value.text : null;\n  const igAccountId = $env.INSTAGRAM_ACCOUNT_ID;\n  isFromSelf = !!(senderId && igAccountId && senderId === igAccountId);\n} else {\n  isCommentAdd = !!(value && value.item === 'comment' && value.verb === 'add');\n  senderId = value ? (value.sender_id || (value.from && value.from.id)) : null;\n  senderName = value ? (value.sender_name || (value.from && value.from.name)) : null;\n  commentId = value ? value.comment_id : null;\n  postId = value ? value.post_id : null;\n  commentText = value ? value.message : null;\n  const pageId = $env.FACEBOOK_PAGE_ID;\n  isFromSelf = !!(senderId && pageId && senderId === pageId);\n}\n\nconst is_relevant = !!(isCommentAdd && senderId && !isFromSelf);\n\nreturn [{ json: {\n  is_relevant,\n  platform,\n  comment_id: commentId,\n  post_id: postId,\n  commenter_facebook_id: senderId,\n  commenter_name: senderName,\n  comment_text: commentText\n} }];"
+      }
+    },
+    {
+      "id": "node_if_relevant",
+      "name": "Is Relevant Comment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        840,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_relevant}}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_noop_ignore",
+      "name": "No Operation - Ignore Event",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1060,
+        500
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "node_register_comment",
+      "name": "Register Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "نرسل facebook_post_id كما هو (معرّف فيسبوك الخام) — الـ Backend هو من يربطه بمعرّف social_posts الداخلي، فلا يحتاج n8n لمعرفة ذلك التفصيل.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/facebook-comments",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"facebook_comment_id\": $json.comment_id, \"facebook_post_id\": $json.post_id, \"platform\": $json.platform, \"commenter_facebook_id\": $json.commenter_facebook_id, \"commenter_name\": $json.commenter_name, \"comment_text\": $json.comment_text } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_reply_comment",
+      "name": "Reply To Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "الـ Backend يتولى فحص idempotency (نفس الشخص/نفس المنشور) وإرسال الرد الفعلي عبر Graph API — يحمل توكن الصفحة مركزياً. التوقع: {replied: true} فقط عند إرسال الرد فعلياً الآن (وليس تكراراً).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/facebook-comments/{{$('Register Comment').item.json.id}}/reply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "=fbreply-{{$('Extract Comment Data').item.json.comment_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {} }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_reply_sent",
+      "name": "Was Reply Sent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1500,
+        380
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.replied}}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_execute_messenger",
+      "name": "Execute - Messenger Automation Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1720,
+        320
+      ],
+      "notes": "بعد استيراد Workflow '10 - Messenger Automation'، افتح هذه العقدة واختره من القائمة المنسدلة.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "10 - Messenger Automation"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "commenter_facebook_id": "={{$('Extract Comment Data').item.json.commenter_facebook_id}}",
+            "facebook_comment_id": "={{$('Register Comment').item.json.id}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_noop_already_handled",
+      "name": "No Operation - Already Handled",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1720,
+        460
+      ],
+      "notes": "الشخص نفسه علّق سابقاً على نفس المنشور — لا رد إضافي ولا رسالة Messenger جديدة، تطبيقاً لمنطق منع الإزعاج بالتكرار.",
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Verify Webhook (GET)": {
+      "main": [
+        [
+          {
+            "node": "Verify Token Match?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Token Match?": {
+      "main": [
+        [
+          {
+            "node": "Respond - Verified",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Forbidden",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Events Webhook (POST)": {
+      "main": [
+        [
+          {
+            "node": "Respond - Event Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond - Event Received": {
+      "main": [
+        [
+          {
+            "node": "Extract Comment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Comment Data": {
+      "main": [
+        [
+          {
+            "node": "Is Relevant Comment?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Relevant Comment?": {
+      "main": [
+        [
+          {
+            "node": "Register Comment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation - Ignore Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Comment": {
+      "main": [
+        [
+          {
+            "node": "Reply To Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply To Comment": {
+      "main": [
+        [
+          {
+            "node": "Was Reply Sent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Was Reply Sent?": {
+      "main": [
+        [
+          {
+            "node": "Execute - Messenger Automation Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation - Already Handled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

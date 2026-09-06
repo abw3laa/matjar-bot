@@ -1,0 +1,333 @@
+{
+  "name": "04 - Payment Proof Processing",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [180, 400],
+      "notes": "يُستدعى من '01 - WhatsApp Incoming Messages' عند وصول رسالة بمرفق (صورة أو مستند) بدلاً من نص.",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "conversation_id", "type": "string" },
+            { "name": "wa_id", "type": "string" },
+            { "name": "media_id", "type": "string" },
+            { "name": "media_mime_type", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_classify_file",
+      "name": "Classify File Type",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [400, 400],
+      "notes": "المواصفات تسمح بـ PDF أو صورة أو 'ملف مناسب آخر يدعمه النظام' — المجموعة المدعومة حالياً هي PDF والصور؛ أي نوع آخر يُطلب من العميل استبداله بأحدهما.",
+      "parameters": {
+        "jsCode": "const mime = $input.item.json.media_mime_type || '';\nlet file_type = null;\nif (mime.startsWith('image/')) file_type = 'image';\nelse if (mime === 'application/pdf') file_type = 'pdf';\n\nreturn [{ json: { ...$input.item.json, file_type, is_supported: file_type !== null } }];"
+      }
+    },
+    {
+      "id": "node_if_supported",
+      "name": "Is Supported File Type?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [620, 400],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{$json.is_supported}}", "value2": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_send_unsupported",
+      "name": "Send WhatsApp - Unsupported File Type",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 220],
+      "notes": "بدون retry تلقائي لتفادي إرسال مضاعف.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v20.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"messaging_product\": \"whatsapp\", \"to\": $('Workflow Trigger').item.json.wa_id, \"type\": \"text\", \"text\": { \"body\": \"الملف المرسل غير مدعوم حالياً 🙏 يرجى إرسال إثبات التحويل كصورة أو ملف PDF.\" } } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_get_context",
+      "name": "Get Conversation Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$('Workflow Trigger').item.json.conversation_id}}/context",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_has_active_order",
+      "name": "Has Active Order Awaiting Proof?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1060, 400],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.active_order_id}}", "operation": "isNotEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_send_no_pending_order",
+      "name": "Send WhatsApp - No Pending Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 220],
+      "notes": "بدون retry تلقائي لتفادي إرسال مضاعف.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v20.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"messaging_product\": \"whatsapp\", \"to\": $('Workflow Trigger').item.json.wa_id, \"type\": \"text\", \"text\": { \"body\": \"ما لقينا طلباً بانتظار إثبات دفع حالياً 🙏 إذا عندك طلب قيد التنفيذ خبرنا وبنساعدك.\" } } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_get_media_url",
+      "name": "Get WhatsApp Media URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "استرجاع الملف من WhatsApp خطوتان: أولاً هذا الاستدعاء يعطي رابط تحميل مؤقتاً (url)، ثم عقدة لاحقة تُحمّل الملف الفعلي من ذلك الرابط.",
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v20.0/{{$('Workflow Trigger').item.json.media_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_request_upload_url",
+      "name": "Request Upload URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "نقطة نهاية تكميلية صغيرة (POST /uploads/presign) تُبقي بيانات اعتماد التخزين (S3) مركزية في الـ Backend فقط، ولا تُشارَك مع n8n — تعيد رابط رفع مؤقتاً (upload_url) والرابط النهائي للملف (file_url).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/uploads/presign",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"purpose\": \"payment_proof\", \"file_extension\": ($('Classify File Type').item.json.file_type === 'pdf' ? 'pdf' : 'jpg'), \"order_id\": $('Get Conversation Context').item.json.active_order_id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_download_media",
+      "name": "Download Media File",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1720, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "تنزيل ثنائي (binary). تحقق من اسم الخيار الدقيق لصيغة الاستجابة الثنائية حسب نسخة n8n لديك (responseFormat=file أو ما يعادلها).",
+      "parameters": {
+        "method": "GET",
+        "url": "={{$('Get WhatsApp Media URL').item.json.url}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "node_upload_storage",
+      "name": "Upload File To Storage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1940, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "رفع مباشر إلى رابط presigned — لا يحتاج Authorization إضافي (الرابط موقّع ومؤقت بذاته). يجب أن تكون هذه العقدة متصلة مباشرة بعد عقدة التنزيل الثنائي حتى لا تُفقد البيانات الثنائية عبر عقدة JSON بينهما.",
+      "parameters": {
+        "method": "PUT",
+        "url": "={{$('Request Upload URL').item.json.upload_url}}",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_link_proof",
+      "name": "Link Payment Proof To Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2160, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "يستخدم media_id الفريد من WhatsApp كـ file_hash — يمنع معالجة نفس الملف مرتين عند تكرار الـ webhook، محمي أيضاً بقيد UNIQUE(order_id, file_hash) على مستوى قاعدة البيانات. عند النجاح تتحول حالة الطلب تلقائياً إلى PENDING_ADMIN_REVIEW (سلوك الـ Backend).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$('Get Conversation Context').item.json.active_order_id}}/payment-proof",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" },
+            { "name": "Idempotency-Key", "value": "=proof-{{$('Workflow Trigger').item.json.media_id}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"file_url\": $('Request Upload URL').item.json.file_url, \"file_type\": $('Classify File Type').item.json.file_type, \"file_hash\": $('Workflow Trigger').item.json.media_id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_send_confirmation",
+      "name": "Send WhatsApp - Proof Received Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2380, 400],
+      "notes": "بدون retry تلقائي لتفادي إرسال مضاعف. مهم: هذا لا يعني قبول الطلب — فقط استلام الإثبات؛ القرار النهائي للأدمن كما تنص المواصفات.",
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v20.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"messaging_product\": \"whatsapp\", \"to\": $('Workflow Trigger').item.json.wa_id, \"type\": \"text\", \"text\": { \"body\": \"تم استلام إثبات التحويل ✅ سنراجع طلبك ونرسل لك التأكيد قريباً.\" } } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_execute_admin_notification",
+      "name": "Execute - Admin Notification Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [2600, 400],
+      "notes": "بعد استيراد Workflow '05 - Admin Notification'، افتح هذه العقدة واختره من القائمة المنسدلة.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "05 - Admin Notification"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "order_id": "={{$('Get Conversation Context').item.json.active_order_id}}"
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [[{ "node": "Classify File Type", "type": "main", "index": 0 }]]
+    },
+    "Classify File Type": {
+      "main": [[{ "node": "Is Supported File Type?", "type": "main", "index": 0 }]]
+    },
+    "Is Supported File Type?": {
+      "main": [
+        [{ "node": "Get Conversation Context", "type": "main", "index": 0 }],
+        [{ "node": "Send WhatsApp - Unsupported File Type", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Conversation Context": {
+      "main": [[{ "node": "Has Active Order Awaiting Proof?", "type": "main", "index": 0 }]]
+    },
+    "Has Active Order Awaiting Proof?": {
+      "main": [
+        [{ "node": "Get WhatsApp Media URL", "type": "main", "index": 0 }],
+        [{ "node": "Send WhatsApp - No Pending Order", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get WhatsApp Media URL": {
+      "main": [[{ "node": "Request Upload URL", "type": "main", "index": 0 }]]
+    },
+    "Request Upload URL": {
+      "main": [[{ "node": "Download Media File", "type": "main", "index": 0 }]]
+    },
+    "Download Media File": {
+      "main": [[{ "node": "Upload File To Storage", "type": "main", "index": 0 }]]
+    },
+    "Upload File To Storage": {
+      "main": [[{ "node": "Link Payment Proof To Order", "type": "main", "index": 0 }]]
+    },
+    "Link Payment Proof To Order": {
+      "main": [[{ "node": "Send WhatsApp - Proof Received Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Send WhatsApp - Proof Received Confirmation": {
+      "main": [[{ "node": "Execute - Admin Notification Workflow", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

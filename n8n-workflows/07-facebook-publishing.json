@@ -1,0 +1,98 @@
+{
+  "name": "07 - Facebook Publishing",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Publish Now Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [180, 400],
+      "notes": "يستدعيه تطبيق الأدمن عند ضغط 'نشر الآن'. المتوقع بالـ body: {social_post_id, target_platforms?} — target_platforms فارغة/غائبة = النشر الجماعي الافتراضي على كل المنصات المرتبطة.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "admin/publish-post",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_call_publish",
+      "name": "Call Backend Publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 400],
+      "continueOnFail": true,
+      "notes": "الـ Backend هو من يتحكم فعلياً في استدعاء Facebook Graph API، لأنه يحمل access_token_ref الخاص بالصفحة بشكل مركزي وآمن — بنفس منطق /uploads/presign و/admin/notifications. لهذا هذا الـ Workflow بسيط عمداً: مجرد وسيط بين تطبيق الأدمن والـ Backend. continueOnFail مفعّل حتى نستطيع الرد على تطبيق الأدمن برسالة خطأ واضحة بدل تعطّل الـ Workflow بصمت.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/social-posts/{{$json.body.social_post_id}}/publish",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"target_platforms\": $json.body.target_platforms } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_succeeded",
+      "name": "Publish Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [620, 400],
+      "notes": "تحقق تقريبي بالاعتماد على وجود حقل error الذي يضيفه n8n عادةً عند التقاط فشل عبر continueOnFail — تأكد من تطابقه مع سلوك نسختك.",
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.error}}", "operation": "isEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_respond_success",
+      "name": "Respond - Publish Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [840, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json}}",
+        "options": { "responseCode": 200 }
+      }
+    },
+    {
+      "id": "node_respond_failure",
+      "name": "Respond - Publish Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [840, 500],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": $json.error } }}",
+        "options": { "responseCode": 502 }
+      }
+    }
+  ],
+  "connections": {
+    "Publish Now Webhook": {
+      "main": [[{ "node": "Call Backend Publish", "type": "main", "index": 0 }]]
+    },
+    "Call Backend Publish": {
+      "main": [[{ "node": "Publish Succeeded?", "type": "main", "index": 0 }]]
+    },
+    "Publish Succeeded?": {
+      "main": [
+        [{ "node": "Respond - Publish Success", "type": "main", "index": 0 }],
+        [{ "node": "Respond - Publish Failed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

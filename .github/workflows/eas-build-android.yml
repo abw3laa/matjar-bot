@@ -1,0 +1,44 @@
+name: Build Android APK (EAS)
+
+# يعمل تلقائياً عند أي push يغيّر شيئاً داخل admin-app/، أو يدوياً من تبويب Actions
+# (زر "Run workflow") في أي وقت عبر workflow_dispatch.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "admin-app/**"
+      - ".github/workflows/eas-build-android.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-app
+
+    steps:
+      - name: 🏗 Checkout repo
+        uses: actions/checkout@v4
+
+      - name: 🏗 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          # لا يوجد cache: npm هنا عمداً — لا يوجد package-lock.json في المستودع بعد
+          # (وُلِّد المشروع في بيئة بلا إنترنت). أضف "cache: npm" بعد أول
+          # `npm install` محلي وارفع package-lock.json.
+
+      - name: 🏗 Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: 📦 Install dependencies
+        run: npm install
+
+      - name: 🚀 Build Android APK on EAS
+        # non-interactive = ينتظر انتهاء البناء فعلياً ويطبع رابط التنزيل في السجل
+        # (وليس fire-and-forget) — لتتمكن من متابعته من تبويب Actions مباشرة.
+        run: eas build --platform android --profile preview --non-interactive

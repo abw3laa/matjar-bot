@@ -1,0 +1,9 @@
+# Admin App (Node / Expo)
+admin-app/node_modules/
+admin-app/.expo/
+admin-app/dist/
+admin-app/.env
+
+# OS / editor
+.DS_Store
+*.log

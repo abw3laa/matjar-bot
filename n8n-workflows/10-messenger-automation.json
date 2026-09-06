@@ -1,0 +1,55 @@
+{
+  "name": "10 - Messenger Automation",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [180, 300],
+      "notes": "يُستدعى من '09 - Facebook Comments' فقط عند إرسال رد علني جديد فعلاً (وليس عند تكرار من نفس الشخص).",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "commenter_facebook_id", "type": "string" },
+            { "name": "facebook_comment_id", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_send_redirect",
+      "name": "Send Messenger - WhatsApp Redirect",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 300],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "الـ Backend يتولى الإرسال الفعلي عبر Messenger Send API (يحمل التوكن مركزياً)، ويتضمّن رابط/زر WhatsApp. طبقة حماية إضافية من التكرار هنا فوق ما تم فحصه أصلاً في Workflow 09 — احتياط لا ضرر منه.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/messenger/send-whatsapp-redirect",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" },
+            { "name": "Idempotency-Key", "value": "=messenger-{{$json.commenter_facebook_id}}-{{$json.facebook_comment_id}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"commenter_facebook_id\": $json.commenter_facebook_id, \"facebook_comment_id\": $json.facebook_comment_id } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [[{ "node": "Send Messenger - WhatsApp Redirect", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

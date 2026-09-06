@@ -1,0 +1,996 @@
+openapi: 3.0.3
+info:
+  title: Multi-Channel Sales & Automation Platform API
+  description: >
+    Backend API — المصدر الوحيد للحقيقة (Source of Truth) للبيانات التجارية.
+    يُستهلك من n8n ومن تطبيق الأدمن معاً. لا وصول مباشر لقاعدة البيانات من أي طبقة أخرى.
+    يحمل هذا الـ Backend أيضاً كل التوكنات الحساسة (WhatsApp/Facebook Graph API عند الحاجة،
+    S3، خدمة الإشعارات) بشكل مركزي بدل توزيعها على طبقة الأتمتة.
+  version: "1.1.0"
+
+servers:
+  - url: https://api.internal.example.com/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  # ===================================================================
+  # 1. CATALOG API
+  # ===================================================================
+  /products/{productId}:
+    get:
+      summary: بيانات المنتج
+      tags: [Catalog]
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "404": { description: غير موجود }
+
+  /products/{productId}/variants:
+    get:
+      summary: الألوان/المقاسات المتاحة للمنتج
+      tags: [Catalog]
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProductVariant" }
+
+  /products/search:
+    get:
+      summary: بحث نصي بسيط عن منتج بالاسم (لربط ما يذكره العميل باسمه بمعرّفه الحقيقي)
+      tags: [Catalog]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: نتائج مرتبة حسب الصلة — الأقرب أولاً
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Product" }
+
+  /variants/{variantId}/availability:
+    get:
+      summary: التحقق من توفر Variant محدد في المخزون
+      tags: [Catalog]
+      parameters:
+        - name: variantId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  variant_id: { type: string, format: uuid }
+                  available: { type: boolean }
+                  quantity_available: { type: integer }
+
+  # ===================================================================
+  # 2. CONVERSATION & CONTEXT API
+  # ===================================================================
+  /conversations/resolve:
+    post:
+      summary: >
+        إيجاد أو إنشاء (find-or-create) محادثة + هوية عميل مرتبطة بقناة معينة (WhatsApp/Messenger).
+        نقطة الدخول الأولى لأي رسالة واردة قبل أي معالجة أخرى.
+      tags: [Conversation]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, channel_user_id]
+              properties:
+                channel: { type: string, enum: [whatsapp, messenger] }
+                channel_user_id: { type: string }
+                customer_phone: { type: string }
+                customer_name: { type: string }
+      responses:
+        "200":
+          description: تم إيجاد أو إنشاء المحادثة
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation_id: { type: string, format: uuid }
+                  customer_id: { type: string, format: uuid }
+                  current_context: { $ref: "#/components/schemas/ConversationContext" }
+
+  /conversations:
+    get:
+      summary: سرد المحادثات مع فلترة اختيارية حسب الحالة — أساسية لعرض المحادثات المُصعَّدة للبشر
+      tags: [Conversation]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [active, escalated_to_human, closed] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Conversation" }
+
+  /conversations/{conversationId}:
+    get:
+      summary: بيانات أساسية عن المحادثة، متضمنة العميل المرتبط بها
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+
+  /conversations/{conversationId}/context:
+    get:
+      summary: قراءة سياق المحادثة الحالي
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationContext" }
+    post:
+      summary: دمج (merge) تحديث على السياق الحالي — لا يستبدل السياق بالكامل
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: أي subset من حقول ConversationContext يُدمج مع الموجود
+              additionalProperties: true
+      responses:
+        "200":
+          description: السياق بعد الدمج (كامل السياق الناتج، وليس فقط الحقول المرسلة)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationContext" }
+
+  /conversations/{conversationId}/escalate:
+    post:
+      summary: تحويل المحادثة لبشري (يوقف رد البوت التلقائي)
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: "customer_requested | ai_low_confidence | error"
+      responses:
+        "200": { description: تم التحويل }
+
+  /conversations/{conversationId}/close:
+    post:
+      summary: إغلاق محادثة مُصعَّدة بعد أن ينتهي الأدمن من التعامل معها يدوياً
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: تم الإغلاق }
+
+  # ===================================================================
+  # 2B. MESSAGES API
+  # ===================================================================
+  /messages:
+    post:
+      summary: تسجيل رسالة (واردة أو صادرة) ضمن محادثة، لأرشفة كاملة قابلة للرجوع إليها
+      tags: [Conversation]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateMessageRequest" }
+      responses:
+        "201": { description: تم التسجيل }
+
+  /conversations/{conversationId}/messages:
+    get:
+      summary: سجل رسائل محادثة معينة كاملاً، مرتباً زمنياً — لعرضه في شاشة المحادثات المُصعَّدة بتطبيق الأدمن
+      tags: [Conversation]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Message" }
+
+  # ===================================================================
+  # 3. ORDERS API
+  # ===================================================================
+  /orders:
+    get:
+      summary: سرد الطلبات مع فلترة اختيارية حسب الحالة — للاستخدام في شاشة قائمة الطلبات بتطبيق الأدمن
+      tags: [Orders]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+          description: فلترة حسب حالة واحدة، مثال PENDING_ADMIN_REVIEW
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orders:
+                    type: array
+                    items: { $ref: "#/components/schemas/OrderDetail" }
+                  next_cursor: { type: string, nullable: true }
+    post:
+      summary: إنشاء طلب جديد مرتبط بمحادثة/عميل
+      tags: [Orders]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrderRequest" }
+      responses:
+        "201":
+          description: >
+            تم إنشاء الطلب. السعر والمخزون يُحسبان من بيانات الـ variant الحقيقية
+            على الخادم — أي سعر يصل في الطلب (إن وُجد) يُتجاهل.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+
+  /orders/{orderId}:
+    get:
+      summary: تفاصيل الطلب الكاملة (لعرضها في تطبيق الأدمن)
+      tags: [Orders]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderDetail" }
+
+  /orders/{orderId}/customer-data:
+    patch:
+      summary: >
+        تحديث بيانات العميل الخاصة بالطلب. full_name وphone يُحدّثان سجل العميل
+        (customers)، وaddress يُحدّث shipping_address الخاص بهذا الطلب تحديداً.
+        يقبل أي subset من الحقول — لا يُعاد إرسال ما هو فارغ فلا يُمحى شيء موجود.
+      tags: [Orders]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string }
+                phone: { type: string }
+                address: { type: string }
+      responses:
+        "200":
+          description: الطلب بعد التحديث
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderDetail" }
+
+  /orders/{orderId}/payment-method:
+    patch:
+      summary: تعيين طريقة الدفع المختارة على الطلب
+      tags: [Orders]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_method_id]
+              properties:
+                payment_method_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: تم التعيين
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+
+  /orders/{orderId}/payment-proof:
+    post:
+      summary: رفع/ربط إثبات التحويل بالطلب (Idempotent عبر file_hash)
+      tags: [Orders]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_url, file_type]
+              properties:
+                file_url: { type: string }
+                file_type: { type: string, enum: [pdf, image] }
+                file_hash: { type: string }
+      responses:
+        "201":
+          description: تم ربط إثبات التحويل — الحالة أصبحت PENDING_ADMIN_REVIEW تلقائياً
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentProof" }
+
+  /orders/{orderId}/decision:
+    post:
+      summary: >
+        قرار الأدمن على الطلب: قبول / رفض / نفذت الكمية.
+        عند approve يجب إرفاق رقم التتبع. Idempotent عبر Idempotency-Key.
+      tags: [Orders]
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [approve, reject, out_of_stock]
+                tracking_number:
+                  type: string
+                  description: مطلوب إذا decision = approve
+                carrier:
+                  type: string
+                admin_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: تم تنفيذ القرار وتحديث حالة الطلب
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+        "409":
+          description: الطلب ليس في حالة تسمح بهذا القرار
+
+  # ===================================================================
+  # 4. PAYMENT METHODS API
+  # ===================================================================
+  /payment-methods:
+    get:
+      summary: طرق الدفع المفعّلة حالياً (لعرضها للعميل عبر البوت)
+      tags: [Payments]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PaymentMethod" }
+
+  /payment-methods/{id}:
+    patch:
+      summary: تفعيل/تعطيل/تعديل تفاصيل طريقة دفع (مثل IBAN)
+      tags: [Payments]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                is_enabled: { type: boolean }
+                details: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: تم التحديث }
+
+  # ===================================================================
+  # 5. UPLOADS API
+  # ===================================================================
+  /uploads/presign:
+    post:
+      summary: >
+        طلب رابط رفع مؤقت (presigned URL) مباشرة إلى التخزين (S3-compatible).
+        بيانات اعتماد التخزين تبقى في الـ Backend فقط ولا تُشارَك مع n8n.
+      tags: [Uploads]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purpose, file_extension]
+              properties:
+                purpose: { type: string, enum: [payment_proof, social_media] }
+                file_extension: { type: string }
+                order_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url:
+                    type: string
+                    description: رابط PUT مؤقت وموقّع، لا يحتاج Authorization إضافي
+                  file_url:
+                    type: string
+                    description: الرابط النهائي الدائم للملف بعد الرفع
+
+  # ===================================================================
+  # 6. SOCIAL PUBLISHING API
+  # ===================================================================
+  /social-posts:
+    get:
+      summary: سرد المنشورات (مسودة/مجدولة/منشورة/فاشلة) — لشاشة قائمة المنشورات بتطبيق الأدمن
+      tags: [Social]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [draft, scheduled, published, failed] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SocialPost" }
+    post:
+      summary: إنشاء منشور جديد (draft)
+      tags: [Social]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSocialPostRequest" }
+      responses:
+        "201":
+          description: تم إنشاء المنشور كـ draft
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SocialPost" }
+
+  /social-posts/{id}/generate-caption:
+    post:
+      summary: توليد وصف احترافي عبر AI بالاستناد إلى بيانات المنتج الحقيقية
+      tags: [Social]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                marketing_hints:
+                  type: array
+                  items: { type: string }
+                  description: 'مثال: ["منتج جديد", "عليه تنزيلات"]'
+      responses:
+        "200":
+          description: الوصف المُولَّد (قابل للتعديل قبل النشر)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ai_generated_caption: { type: string }
+
+  /social-posts/{id}/schedule:
+    post:
+      summary: جدولة المنشور لوقت لاحق
+      tags: [Social]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scheduled_at]
+              properties:
+                scheduled_at: { type: string, format: date-time }
+      responses:
+        "200": { description: تمت الجدولة }
+
+  /social-posts/{id}/publish:
+    post:
+      summary: >
+        نشر فوري على المنصة/المنصات المختارة. الـ Backend يحمل access_token_ref
+        الخاص بكل social_account وينفّذ استدعاء Graph API فعلياً — لا تصل توكنات
+        فيسبوك إلى n8n إطلاقاً.
+      tags: [Social]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_platforms:
+                  type: array
+                  items: { type: string }
+                  description: 'فارغة أو ["all"] = نشر على كل المنصات المرتبطة (الافتراضي)'
+      responses:
+        "200":
+          description: تم النشر
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SocialPost" }
+
+  # ===================================================================
+  # 7. SCHEDULED POSTS API
+  # ===================================================================
+  /scheduled-posts/due:
+    get:
+      summary: كل المنشورات المجدولة التي حان وقتها ولم تُنفَّذ بعد (status=pending AND scheduled_at <= الآن)
+      tags: [Social]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScheduledPost" }
+
+  /scheduled-posts/{id}:
+    patch:
+      summary: تحديث حالة تنفيذ الجدولة نفسها (منفصلة عن حالة social_post)
+      tags: [Social]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [executed, failed] }
+                executed_at: { type: string, format: date-time }
+      responses:
+        "200": { description: تم التحديث }
+
+  # ===================================================================
+  # 8. FACEBOOK COMMENTS / MESSENGER API
+  # ===================================================================
+  /facebook-comments:
+    post:
+      summary: تسجيل تعليق وارد من Facebook (يُستدعى من n8n)
+      tags: [FacebookComments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IncomingFacebookComment" }
+      responses:
+        "201":
+          description: تم تسجيل التعليق
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FacebookComment" }
+
+  /facebook-comments/{id}/reply:
+    post:
+      summary: >
+        الرد العلني الثابت على التعليق. يفحص idempotency لكل (commenter + post)
+        عبر automation_state قبل التنفيذ، وينفّذ الاستدعاء الفعلي (Graph API الصحيح
+        حسب platform المخزّن على التعليق — مسارات Facebook وInstagram مختلفة) بنفسه.
+        replied=true فقط عند إرسال الرد الآن فعلياً.
+        قيد خاص بـ Instagram: الرسالة الخاصة (عبر /messenger/send-whatsapp-redirect
+        اللاحقة) تفشل حتماً إن مرّ أكثر من 7 أيام على وقت التعليق — قيد من Meta نفسها.
+      tags: [FacebookComments]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: نتيجة العملية (سواء أُرسل الرد الآن أو كان مكرراً)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replied: { type: boolean }
+
+  /messenger/send-whatsapp-redirect:
+    post:
+      summary: >
+        إرسال رسالة Messenger لصاحب التعليق تحوّله إلى WhatsApp.
+        Idempotent لكل commenter_facebook_id — لا تُرسل أكثر من مرة لنفس الشخص.
+      tags: [Messenger]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commenter_facebook_id, facebook_comment_id]
+              properties:
+                commenter_facebook_id: { type: string }
+                facebook_comment_id: { type: string, format: uuid }
+      responses:
+        "200": { description: تم الإرسال (أو تم تجاهله لأنه مكرر) }
+
+  # ===================================================================
+  # 9. ADMIN NOTIFICATIONS API
+  # ===================================================================
+  /admin/devices:
+    post:
+      summary: >
+        تسجيل Expo Push Token لجهاز أدمن، ليصله إشعار Push فعلي عند إرسال
+        الـ Backend لأي إشعار لاحق (بدلاً من FCM/APNs مباشرة — الأبسط لتطبيق Expo).
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expo_push_token]
+              properties:
+                expo_push_token: { type: string }
+      responses:
+        "200": { description: تم التسجيل }
+
+  /admin/notifications:
+    post:
+      summary: >
+        إرسال إشعار Push لأجهزة الأدمن المسجّلة عبر /admin/devices. الـ Backend
+        يستدعي Expo Push API (exp.host) بنفسه بتوكنات المسجّلة — لا مفاتيح FCM/APNs
+        منفصلة مطلوبة ما دام التطبيق مبنياً بـ Expo.
+      tags: [Admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, title, body]
+              properties:
+                type: { type: string, description: "مثال: order_pending_review" }
+                order_id: { type: string, format: uuid }
+                title: { type: string }
+                body: { type: string }
+                data: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: تم الإرسال }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        مفتاح فريد للعملية (يُولَّد من n8n لكل حدث). عند تكرار نفس المفتاح
+        يُعاد نفس نتيجة أول تنفيذ ناجح دون إعادة التنفيذ الفعلي.
+      schema:
+        type: string
+
+  schemas:
+    Product:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string }
+        base_price: { type: number }
+        is_active: { type: boolean }
+
+    ProductVariant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid }
+        sku: { type: string }
+        color: { type: string }
+        size: { type: string }
+        price: { type: number }
+        quantity_available: { type: integer }
+
+    Customer:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+
+    Conversation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        channel: { type: string, enum: [whatsapp, messenger] }
+        status: { type: string, enum: [active, escalated_to_human, closed] }
+        customer: { $ref: "#/components/schemas/Customer" }
+        last_message_preview: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    Message:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        direction: { type: string, enum: [inbound, outbound] }
+        sender: { type: string, enum: [customer, bot, admin] }
+        content: { type: string, nullable: true }
+        message_type: { type: string, enum: [text, image, document] }
+        media_url: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ConversationContext:
+      type: object
+      properties:
+        active_product_id: { type: string, format: uuid, nullable: true }
+        active_order_id: { type: string, format: uuid, nullable: true }
+        selected_color: { type: string, nullable: true }
+        selected_size: { type: string, nullable: true }
+        last_intent: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    CreateMessageRequest:
+      type: object
+      required: [conversation_id, direction, sender]
+      properties:
+        conversation_id: { type: string, format: uuid }
+        direction: { type: string, enum: [inbound, outbound] }
+        sender: { type: string, enum: [customer, bot, admin] }
+        content: { type: string, nullable: true }
+        message_type: { type: string, enum: [text, image, document] }
+        media_id: { type: string, nullable: true }
+
+    CreateOrderRequest:
+      type: object
+      required: [customer_id, conversation_id, items]
+      properties:
+        customer_id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              variant_id: { type: string, format: uuid }
+              quantity: { type: integer }
+
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        order_number: { type: string }
+        status:
+          type: string
+          enum: [NEW, PRODUCT_SELECTED, WAITING_FOR_CUSTOMER_DATA, WAITING_FOR_PAYMENT,
+                 WAITING_FOR_PAYMENT_PROOF, PENDING_ADMIN_REVIEW, APPROVED, REJECTED,
+                 OUT_OF_STOCK, SHIPPED]
+        total_amount: { type: number }
+        shipping_address: { type: string, nullable: true }
+
+    OrderItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        variant_id: { type: string, format: uuid }
+        variant_name:
+          type: string
+          description: اسم معروض جاهز للقراءة (مثال "قميص أزرق - L") لتسهيل العرض في تطبيق الأدمن وإشعاراته
+        sku: { type: string }
+        quantity: { type: integer }
+        unit_price: { type: number }
+
+    OrderDetail:
+      allOf:
+        - $ref: "#/components/schemas/Order"
+        - type: object
+          properties:
+            customer: { $ref: "#/components/schemas/Customer" }
+            items:
+              type: array
+              items: { $ref: "#/components/schemas/OrderItem" }
+            payment_proof: { $ref: "#/components/schemas/PaymentProof" }
+            tracking:
+              type: object
+              properties:
+                tracking_number: { type: string }
+                carrier: { type: string }
+
+    PaymentProof:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        file_url: { type: string }
+        file_type: { type: string, enum: [pdf, image] }
+
+    PaymentMethod:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [bank_transfer, cash_on_delivery] }
+        is_enabled: { type: boolean }
+        details: { type: object, additionalProperties: true }
+
+    CreateSocialPostRequest:
+      type: object
+      properties:
+        product_id: { type: string, format: uuid }
+        media_urls: { type: array, items: { type: string } }
+        admin_notes: { type: string }
+
+    SocialPost:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [draft, scheduled, published, failed] }
+        final_caption: { type: string }
+        target_platforms: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+
+    ScheduledPost:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        social_post_id: { type: string, format: uuid }
+        scheduled_at: { type: string, format: date-time }
+        status: { type: string, enum: [pending, executed, failed] }
+
+    IncomingFacebookComment:
+      type: object
+      required: [facebook_comment_id, commenter_facebook_id, comment_text]
+      properties:
+        facebook_comment_id: { type: string }
+        facebook_post_id:
+          type: string
+          description: معرّف المنشور الخام من Facebook/Instagram — الـ Backend يربطه داخلياً بـ social_posts.id
+        platform: { type: string, enum: [facebook, instagram], default: facebook }
+        commenter_facebook_id: { type: string }
+        commenter_name: { type: string }
+        comment_text: { type: string }
+
+    FacebookComment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        replied: { type: boolean }
+        messenger_sent: { type: boolean }

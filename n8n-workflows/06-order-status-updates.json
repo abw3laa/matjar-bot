@@ -1,0 +1,282 @@
+{
+  "name": "06 - Order Status Updates",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Admin Decision Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        400
+      ],
+      "notes": "يستدعيه تطبيق الأدمن مباشرة عند الضغط على قبول/رفض/نفذت الكمية. اضبط نفس الرابط داخل تطبيق الأدمن: POST /webhook/admin/order-decision. متوقع بالـ body: {order_id, decision, tracking_number?, carrier?, admin_id}.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "admin/order-decision",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_validate_input",
+      "name": "Validate Decision Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const body = $input.item.json.body;\nconst decision = body.decision;\nconst errors = [];\n\nif (!['approve', 'reject', 'out_of_stock'].includes(decision)) {\n  errors.push('decision غير صالح — يجب أن يكون approve أو reject أو out_of_stock');\n}\nif (decision === 'approve' && !body.tracking_number) {\n  errors.push('رقم التتبع مطلوب عند قبول الطلب');\n}\nif (!body.order_id) {\n  errors.push('order_id مطلوب');\n}\n\nreturn [{ json: { ...body, is_valid: errors.length === 0, errors } }];"
+      }
+    },
+    {
+      "id": "node_if_valid",
+      "name": "Is Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        620,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_valid}}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_respond_invalid",
+      "name": "Respond - Invalid Input",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"errors\": $json.errors } }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "node_call_decision",
+      "name": "Call Order Decision",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "محمي بـ Idempotency-Key حتى لا يُعالَج القرار مرتين لو ضغط الأدمن مرتين بسرعة أو حدث فشل شبكي مؤقت. الـ Backend نفسه يرفض أيضاً (409) أي قرار على طلب ليس بحالة PENDING_ADMIN_REVIEW.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$json.order_id}}/decision",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "=decision-{{$json.order_id}}-{{$json.decision}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"decision\": $json.decision, \"tracking_number\": $json.tracking_number, \"carrier\": $json.carrier, \"admin_id\": $json.admin_id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_get_order",
+      "name": "Get Order Detail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "نجلب تفاصيل الطلب هنا خصيصاً للحصول على customer.phone — وهو نفسه رقم الـ wa_id الذي يُستخدم للإرسال عبر WhatsApp Cloud API.",
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$('Validate Decision Input').item.json.order_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_compose_message",
+      "name": "Compose Customer Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const decision = $('Validate Decision Input').item.json.decision;\nconst trackingNumber = $('Validate Decision Input').item.json.tracking_number;\nconst carrier = $('Validate Decision Input').item.json.carrier;\n\nlet text;\nif (decision === 'approve') {\n  text = `تم قبول طلبك ✅\\nرقم التتبع: ${trackingNumber}${carrier ? ' (' + carrier + ')' : ''}\\nسيصلك طلبك قريباً 📦`;\n} else if (decision === 'reject') {\n  text = 'نعتذر، تعذّر إتمام طلبك هذه المرة 🙏 لأي استفسار تواصل معنا وسنكون سعداء بمساعدتك.';\n} else {\n  text = 'نعتذر، الكمية المطلوبة من هذا المنتج نفدت حالياً 🙏 سنعلمك فور توفرها من جديد بإذن الله.';\n}\n\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "node_send_whatsapp",
+      "name": "Send WhatsApp - Decision Result",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1500,
+        400
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Get Order Detail').item.json.customer.phone}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_respond_success",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1720,
+        400
+      ],
+      "notes": "يرد على تطبيق الأدمن بنتيجة القرار مباشرة (وليس بعد فترة) — الأدمن ينتظر تأكيداً فورياً على الشاشة.",
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true, \"order\": $('Call Order Decision').item.json } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Admin Decision Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Decision Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Decision Input": {
+      "main": [
+        [
+          {
+            "node": "Is Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Valid?": {
+      "main": [
+        [
+          {
+            "node": "Call Order Decision",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Invalid Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Order Decision": {
+      "main": [
+        [
+          {
+            "node": "Get Order Detail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Order Detail": {
+      "main": [
+        [
+          {
+            "node": "Compose Customer Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Customer Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - Decision Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp - Decision Result": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

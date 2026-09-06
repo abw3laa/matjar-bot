@@ -1,0 +1,949 @@
+{
+  "name": "03 - Order Creation",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        180,
+        400
+      ],
+      "notes": "يُستدعى من '02 - WhatsApp AI Conversation' بثلاثة أوضاع: mode=create (أول تأكيد شراء)، mode=continue (استكمال بيانات عميل)، أو mode=select_payment (اختيار طريقة الدفع).",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "mode",
+              "type": "string"
+            },
+            {
+              "name": "conversation_id",
+              "type": "string"
+            },
+            {
+              "name": "wa_id",
+              "type": "string"
+            },
+            {
+              "name": "message_id",
+              "type": "string"
+            },
+            {
+              "name": "active_order_id",
+              "type": "string"
+            },
+            {
+              "name": "variant_id",
+              "type": "string"
+            },
+            {
+              "name": "customer_name",
+              "type": "string"
+            },
+            {
+              "name": "customer_phone",
+              "type": "string"
+            },
+            {
+              "name": "customer_address",
+              "type": "string"
+            },
+            {
+              "name": "payment_method_type",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_if_create_mode",
+      "name": "Is Create Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        400,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.mode}}",
+              "value2": "create",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_conversation",
+      "name": "Get Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "notes": "نقطة نهاية أساسية بسيطة (GET /conversations/{id}) تُعيد المحادثة مع بيانات العميل المرتبط بها (customer.id + ما هو معروف عنه مسبقاً).",
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$('Workflow Trigger').item.json.conversation_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_create_order",
+      "name": "Create Order",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1500,
+      "notes": "كمية افتراضية = 1. لا يُرسل أي سعر من n8n. محمي بـ Idempotency-Key فريد لكل رسالة تأكيد شراء.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/orders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            },
+            {
+              "name": "Idempotency-Key",
+              "value": "=create-order-{{$('Workflow Trigger').item.json.conversation_id}}-{{$('Workflow Trigger').item.json.message_id}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"customer_id\": $('Get Conversation').item.json.customer.id, \"conversation_id\": $('Workflow Trigger').item.json.conversation_id, \"items\": [ { \"variant_id\": $('Workflow Trigger').item.json.variant_id, \"quantity\": 1 } ] } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_set_active_order_context",
+      "name": "Set Active Order In Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1060,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$('Workflow Trigger').item.json.conversation_id}}/context",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"active_order_id\": $json.id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_select_payment_mode",
+      "name": "Is Select Payment Mode?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        620,
+        640
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.mode}}",
+              "value2": "select_payment",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_determine_order_id",
+      "name": "Determine Order Id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        400
+      ],
+      "notes": "عقدة التقاء آمنة (create أو continue) — يمكن الإشارة إليها لاحقاً بأمان دائماً.",
+      "parameters": {
+        "jsCode": "let order_id;\ntry {\n  order_id = $('Create Order').item.json.id;\n} catch (e) {\n  order_id = $('Workflow Trigger').item.json.active_order_id;\n}\nreturn [{ json: { order_id } }];"
+      }
+    },
+    {
+      "id": "node_build_patch",
+      "name": "Build Customer Data Patch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        400
+      ],
+      "notes": "يبني فقط الحقول الواردة فعلاً في هذه الرسالة — لا يمحو بيانات محفوظة مسبقاً.",
+      "parameters": {
+        "jsCode": "const trigger = $('Workflow Trigger').item.json;\nconst patch = {};\nif (trigger.customer_name) patch.full_name = trigger.customer_name;\nif (trigger.customer_phone) patch.phone = trigger.customer_phone;\nif (trigger.customer_address) patch.address = trigger.customer_address;\n\nreturn [{ json: { order_id: $json.order_id, patch } }];"
+      }
+    },
+    {
+      "id": "node_patch_order",
+      "name": "Patch Order Customer Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        400
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "notes": "التوقع: يعيد الطلب متضمناً customer.full_name / customer.phone / shipping_address.",
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$json.order_id}}/customer-data",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.patch}}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_check_missing",
+      "name": "Check Missing Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        400
+      ],
+      "parameters": {
+        "jsCode": "const order = $input.item.json;\nconst missing = [];\nif (!order.customer || !order.customer.full_name) missing.push('name');\nif (!order.customer || !order.customer.phone) missing.push('phone');\nif (!order.shipping_address) missing.push('address');\n\nreturn [{ json: { order, missing } }];"
+      }
+    },
+    {
+      "id": "node_if_complete",
+      "name": "All Customer Data Complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2160,
+        400
+      ],
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.missing.length}}",
+              "value2": 0,
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_payment_methods",
+      "name": "Get Payment Methods",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2380,
+        260
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/payment-methods",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_build_payment_message",
+      "name": "Build Payment Options Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        260
+      ],
+      "parameters": {
+        "jsCode": "const methods = $input.item.json;\nconst enabled = Array.isArray(methods) ? methods.filter(m => m.is_enabled) : [];\n\nconst labels = { bank_transfer: 'تحويل بنكي', cash_on_delivery: 'الدفع عند الاستلام' };\nconst optionsList = enabled.map((m, i) => `${i + 1}. ${labels[m.type] || m.type}`).join('\\n');\n\nconst text = `وصلتنا بياناتك بالكامل ✅\\nطرق الدفع المتاحة:\\n${optionsList}\\n\\nأي طريقة تفضل؟`;\n\nreturn [{ json: { reply_text: text, enabled_methods: enabled } }];"
+      }
+    },
+    {
+      "id": "node_send_payment_options",
+      "name": "Send WhatsApp - Payment Options",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2820,
+        260
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_build_missing_message",
+      "name": "Build Missing Fields Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2380,
+        540
+      ],
+      "parameters": {
+        "jsCode": "const missing = $json.missing;\nconst labels = { name: 'الاسم الكامل', phone: 'رقم الهاتف', address: 'العنوان بالتفصيل' };\nconst missingLabels = missing.map(m => labels[m]);\n\nlet text;\nif (missingLabels.length === 1) {\n  text = `تمام! بقي بس ${missingLabels[0]} لإتمام طلبك 🙏`;\n} else {\n  text = `تمام! بقي نحتاج منك:\\n${missingLabels.map((l, i) => `${i + 1}. ${l}`).join('\\n')}\\nلإتمام طلبك 🙏`;\n}\n\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "node_send_missing_data",
+      "name": "Send WhatsApp - Ask Missing Data",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2600,
+        540
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_get_payment_methods_selection",
+      "name": "Get Payment Methods For Selection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        640
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/payment-methods",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_resolve_chosen_method",
+      "name": "Resolve Chosen Payment Method",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        640
+      ],
+      "notes": "يفترض أن الـ AI طبّع اختيار العميل الحر (مثلاً 'حولة بنكية') إلى إحدى القيم الثابتة: bank_transfer | cash_on_delivery.",
+      "parameters": {
+        "jsCode": "const methods = $input.item.json;\nconst chosenType = $('Workflow Trigger').item.json.payment_method_type;\nconst match = Array.isArray(methods) ? methods.find(m => m.is_enabled && m.type === chosenType) : null;\n\nreturn [{ json: { found: !!match, method: match || null, all_enabled: Array.isArray(methods) ? methods.filter(m => m.is_enabled) : [] } }];"
+      }
+    },
+    {
+      "id": "node_if_method_found",
+      "name": "Payment Method Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        640
+      ],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.found}}",
+              "value2": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_patch_payment_method",
+      "name": "Patch Order Payment Method",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1500,
+        580
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "تعيين payment_method_id على الطلب — آمن للتكرار بطبيعته. نقطة نهاية تكميلية صغيرة (PATCH /orders/{id}/payment-method) بنفس روح PATCH /orders/{id}/customer-data.",
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.API_BASE_URL}}/orders/{{$('Workflow Trigger').item.json.active_order_id}}/payment-method",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"payment_method_id\": $json.method.id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_bank_transfer",
+      "name": "Is Bank Transfer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1720,
+        580
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$('Resolve Chosen Payment Method').item.json.method.type}}",
+              "value2": "bank_transfer",
+              "operation": "equal"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_build_iban_message",
+      "name": "Build IBAN Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        500
+      ],
+      "parameters": {
+        "jsCode": "const method = $('Resolve Chosen Payment Method').item.json.method;\nconst iban = (method.details && method.details.iban) ? method.details.iban : '(يرجى مراجعة الأدمن للحصول على رقم الحساب)';\n\nconst text = `لإتمام طلبك، يرجى تحويل المبلغ إلى حساب IBAN التالي:\\n${iban}\\n\\nبعد التحويل أرسل لنا صورة أو ملف إثبات التحويل هنا ليتم مراجعة الطلب.`;\n\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "node_send_iban_message",
+      "name": "Send WhatsApp - IBAN Instructions",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2160,
+        500
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_build_cod_message",
+      "name": "Build COD Confirmation Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1940,
+        660
+      ],
+      "parameters": {
+        "jsCode": "const text = 'تم تسجيل طلبك للدفع عند الاستلام ✅ سنراجع الطلب ونتواصل معك لتأكيد التفاصيل والشحن.';\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "node_send_cod_message",
+      "name": "Send WhatsApp - COD Confirmation",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2160,
+        660
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_build_invalid_payment_message",
+      "name": "Build Invalid Payment Choice Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1500,
+        780
+      ],
+      "parameters": {
+        "jsCode": "const enabled = $json.all_enabled || [];\nconst labels = { bank_transfer: 'تحويل بنكي', cash_on_delivery: 'الدفع عند الاستلام' };\nconst optionsList = enabled.map((m, i) => `${i + 1}. ${labels[m.type] || m.type}`).join('\\n');\n\nconst text = `عذراً، ما قدرنا نطابق هالطريقة مع الخيارات المتاحة حالياً:\\n${optionsList}\\n\\nأي وحدة منها تفضل؟`;\n\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "node_send_invalid_payment_message",
+      "name": "Send WhatsApp - Invalid Payment Choice",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1720,
+        780
+      ],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_execute_admin_notification",
+      "name": "Execute - Admin Notification Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2380,
+        820
+      ],
+      "notes": "بعد استيراد Workflow '05 - Admin Notification'، افتح هذه العقدة واختره من القائمة المنسدلة. يُستدعى هنا لأن طلبات الدفع عند الاستلام تصل مباشرة لحالة بانتظار المراجعة دون حاجة لإثبات تحويل.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "05 - Admin Notification"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "order_id": "={{$('Workflow Trigger').item.json.active_order_id}}"
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [
+        [
+          {
+            "node": "Is Create Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Create Mode?": {
+      "main": [
+        [
+          {
+            "node": "Get Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Select Payment Mode?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Conversation": {
+      "main": [
+        [
+          {
+            "node": "Create Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Order": {
+      "main": [
+        [
+          {
+            "node": "Set Active Order In Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Active Order In Context": {
+      "main": [
+        [
+          {
+            "node": "Determine Order Id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Select Payment Mode?": {
+      "main": [
+        [
+          {
+            "node": "Get Payment Methods For Selection",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Determine Order Id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Order Id": {
+      "main": [
+        [
+          {
+            "node": "Build Customer Data Patch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Customer Data Patch": {
+      "main": [
+        [
+          {
+            "node": "Patch Order Customer Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Patch Order Customer Data": {
+      "main": [
+        [
+          {
+            "node": "Check Missing Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Missing Fields": {
+      "main": [
+        [
+          {
+            "node": "All Customer Data Complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All Customer Data Complete?": {
+      "main": [
+        [
+          {
+            "node": "Get Payment Methods",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Missing Fields Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Payment Methods": {
+      "main": [
+        [
+          {
+            "node": "Build Payment Options Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Payment Options Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - Payment Options",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Missing Fields Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - Ask Missing Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Payment Methods For Selection": {
+      "main": [
+        [
+          {
+            "node": "Resolve Chosen Payment Method",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Chosen Payment Method": {
+      "main": [
+        [
+          {
+            "node": "Payment Method Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payment Method Found?": {
+      "main": [
+        [
+          {
+            "node": "Patch Order Payment Method",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Invalid Payment Choice Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Patch Order Payment Method": {
+      "main": [
+        [
+          {
+            "node": "Is Bank Transfer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Bank Transfer?": {
+      "main": [
+        [
+          {
+            "node": "Build IBAN Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build COD Confirmation Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build IBAN Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - IBAN Instructions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build COD Confirmation Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - COD Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp - COD Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Execute - Admin Notification Workflow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Invalid Payment Choice Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - Invalid Payment Choice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

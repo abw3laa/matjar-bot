@@ -1,0 +1,476 @@
+{
+  "name": "02 - WhatsApp AI Conversation",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [180, 420],
+      "notes": "يستقبل conversation_id / wa_id / message_text / message_id من Workflow '01 - WhatsApp Incoming Messages'.",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "conversation_id", "type": "string" },
+            { "name": "wa_id", "type": "string" },
+            { "name": "message_text", "type": "string" },
+            { "name": "message_id", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_context",
+      "name": "Get Conversation Context",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 420],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$json.conversation_id}}/context",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_ai_nlu",
+      "name": "AI - Understand Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, 420],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "notes": "هذه الخطوة (الفهم) منفصلة عمداً عن خطوة (الصياغة) لاحقاً: الـ AI هنا يستخرج النية والكيانات فقط (Intent/Entities) — لا يقرر سعراً ولا مخزوناً. التوقع: {intent, confidence, entities:{product_reference, color, size, customer_name, customer_phone, customer_address}}",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AI_SERVICE_URL}}/nlu",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.AI_SERVICE_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"message_text\": $('Workflow Trigger').item.json.message_text, \"current_context\": $json, \"expected_intents\": [\"ask_price\",\"ask_colors\",\"ask_sizes\",\"select_color\",\"select_size\",\"confirm_purchase\",\"begin_order\",\"provide_customer_data\",\"select_payment_method\",\"request_human\",\"unclear\"] } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_determine_escalation",
+      "name": "Determine Escalation Need",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 420],
+      "parameters": {
+        "jsCode": "const ai = $input.item.json;\nconst intent = ai.intent;\nconst confidence = typeof ai.confidence === 'number' ? ai.confidence : 1;\nconst should_escalate = intent === 'request_human' || confidence < 0.5;\n\nreturn [{ json: { ...ai, should_escalate } }];"
+      }
+    },
+    {
+      "id": "node_if_escalate",
+      "name": "Needs Human Escalation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1060, 420],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{$json.should_escalate}}", "value2": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_escalate_conversation",
+      "name": "Escalate Conversation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1280, 220],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$('Workflow Trigger').item.json.conversation_id}}/escalate",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"reason\": $json.intent === 'request_human' ? 'customer_requested' : 'ai_low_confidence' } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_send_handoff_notice",
+      "name": "Send WhatsApp - Human Handoff Notice",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1500, 220],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية (Evolution/QR) حسب WHATSAPP_PROVIDER، بلا أي منطق هنا.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "سيتم تحويلك الآن إلى أحد ممثلي خدمة العملاء وسيتواصل معك في أقرب وقت 🙏"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_if_mentions_product",
+      "name": "Mentions Product By Name?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1280, 500],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.entities.product_reference}}", "operation": "isNotEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_search_product",
+      "name": "Search Product By Name",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 420],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "نقطة نهاية بحث بسيطة (GET /products/search?q=) — إضافة تقنية تكميلية ضرورية لربط اسم المنتج الذي يذكره العميل بمعرّفه الحقيقي في قاعدة البيانات.",
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/products/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "={{$json.entities.product_reference}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_resolve_from_search",
+      "name": "Resolve Product - From Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1720, 420],
+      "parameters": {
+        "jsCode": "const results = $input.item.json;\nconst existingContext = $('Get Conversation Context').item.json;\nconst aiOutput = $('Determine Escalation Need').item.json;\n\nconst resolvedProductId = (Array.isArray(results) && results.length > 0)\n  ? results[0].id\n  : (existingContext.active_product_id || null);\n\nreturn [{ json: {\n  active_product_id: resolvedProductId,\n  selected_color: (aiOutput.entities && aiOutput.entities.color) || existingContext.selected_color || null,\n  selected_size: (aiOutput.entities && aiOutput.entities.size) || existingContext.selected_size || null,\n  last_intent: aiOutput.intent\n} }];"
+      }
+    },
+    {
+      "id": "node_resolve_from_context",
+      "name": "Resolve Product - From Existing Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 620],
+      "parameters": {
+        "jsCode": "const existingContext = $('Get Conversation Context').item.json;\nconst aiOutput = $('Determine Escalation Need').item.json;\n\nreturn [{ json: {\n  active_product_id: existingContext.active_product_id || null,\n  selected_color: (aiOutput.entities && aiOutput.entities.color) || existingContext.selected_color || null,\n  selected_size: (aiOutput.entities && aiOutput.entities.size) || existingContext.selected_size || null,\n  last_intent: aiOutput.intent\n} }];"
+      }
+    },
+    {
+      "id": "node_merge_context",
+      "name": "Merge Context Update",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1940, 500],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500,
+      "notes": "دمج (merge) وليس استبدال — العملية آمنة لإعادة المحاولة.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/conversations/{{$('Workflow Trigger').item.json.conversation_id}}/context",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_has_active_product",
+      "name": "Has Active Product?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2160, 500],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.active_product_id}}", "operation": "isNotEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_product",
+      "name": "Get Product",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2380, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/products/{{$json.active_product_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_get_variants",
+      "name": "Get Product Variants",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2600, 380],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/products/{{$('Get Product').item.json.id}}/variants",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_build_grounding",
+      "name": "Build Grounding Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2820, 500],
+      "notes": "عقدة تلتقي فيها الفرعان (منتج محدد / لا يوجد منتج بعد)، لذا يمكن الإشارة إليها لاحقاً بالاسم بأمان دائماً بغض النظر عن المسار المتخذ.",
+      "parameters": {
+        "jsCode": "let grounding_data;\ntry {\n  const product = $('Get Product').item.json;\n  const variants = $('Get Product Variants').item.json;\n  const mergedContext = $('Merge Context Update').item.json;\n\n  const availableColors = [...new Set(variants.map(v => v.color).filter(Boolean))];\n  const availableSizes = [...new Set(variants.map(v => v.size).filter(Boolean))];\n\n  let selectedVariant = null;\n  if (mergedContext.selected_color && mergedContext.selected_size) {\n    selectedVariant = variants.find(v =>\n      v.color === mergedContext.selected_color && v.size === mergedContext.selected_size\n    ) || null;\n  }\n\n  grounding_data = {\n    product_name: product.name,\n    description: product.description,\n    base_price: product.base_price,\n    available_colors: availableColors,\n    available_sizes: availableSizes,\n    selected_variant: selectedVariant,\n    is_available: selectedVariant ? (selectedVariant.quantity_available > 0) : null\n  };\n} catch (e) {\n  grounding_data = {\n    product_name: null,\n    description: null,\n    base_price: null,\n    available_colors: [],\n    available_sizes: [],\n    selected_variant: null,\n    is_available: null,\n    note: 'no_active_product_selected'\n  };\n}\n\nreturn [{ json: grounding_data }];"
+      }
+    },
+    {
+      "id": "node_ai_compose",
+      "name": "AI - Compose Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3040, 500],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "notes": "خطوة (الصياغة): تُبنى الرسالة النهائية بالعربية بالاستناد حصراً إلى grounding_data (بيانات حقيقية من DB) — الـ AI يصيغ الأسلوب فقط ولا يخترع رقماً.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AI_SERVICE_URL}}/compose-reply",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.AI_SERVICE_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"intent\": $('Determine Escalation Need').item.json.intent, \"entities\": $('Determine Escalation Need').item.json.entities, \"grounding_data\": $json, \"language\": \"ar\" } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_send_reply",
+      "name": "Send WhatsApp Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [3260, 500],
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_text": "={{$json.reply_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_determine_order_start",
+      "name": "Determine Order Start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3480, 500],
+      "parameters": {
+        "jsCode": "const intent = $('Determine Escalation Need').item.json.intent;\nconst entities = $('Determine Escalation Need').item.json.entities || {};\nconst isAvailable = $('Build Grounding Data').item.json.is_available;\nconst context = $('Merge Context Update').item.json;\nconst purchaseIntents = ['confirm_purchase', 'begin_order'];\n\n// حالة أولى: تأكيد شراء جديد على منتج متوفر، ولا يوجد طلب مفتوح أصلاً لهذه المحادثة\nconst isNewOrderTrigger = purchaseIntents.includes(intent) && isAvailable === true && !context.active_order_id;\n\n// حالة ثانية: هناك طلب مفتوح بانتظار بيانات العميل، وهذه الرسالة تحتوي جزءاً من تلك البيانات\nconst hasCustomerDataPieces = !!(entities.customer_name || entities.customer_phone || entities.customer_address);\nconst isContinuationTrigger = !!context.active_order_id && hasCustomerDataPieces;\n\n// حالة ثالثة: هناك طلب مفتوح بانتظار اختيار طريقة الدفع، والعميل اختار طريقة الآن\nconst isPaymentSelectionTrigger = !!context.active_order_id && intent === 'select_payment_method' && !!entities.payment_method_type;\n\nconst should_start_order = isNewOrderTrigger || isContinuationTrigger || isPaymentSelectionTrigger;\nconst order_workflow_mode = isNewOrderTrigger ? 'create' : (isContinuationTrigger ? 'continue' : (isPaymentSelectionTrigger ? 'select_payment' : null));\n\nreturn [{ json: { ...$input.item.json, should_start_order, order_workflow_mode } }];"
+      }
+    },
+    {
+      "id": "node_if_start_order",
+      "name": "Should Start Order Creation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [3700, 500],
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            { "value1": "={{$json.should_start_order}}", "value2": true }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_execute_order_creation",
+      "name": "Execute - Order Creation Workflow",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [3920, 420],
+      "notes": "بعد استيراد Workflow '03 - Order Creation'، افتح هذه العقدة واختره من القائمة المنسدلة.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "03 - Order Creation"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mode": "={{$json.order_workflow_mode}}",
+            "conversation_id": "={{$('Workflow Trigger').item.json.conversation_id}}",
+            "wa_id": "={{$('Workflow Trigger').item.json.wa_id}}",
+            "message_id": "={{$('Workflow Trigger').item.json.message_id}}",
+            "active_order_id": "={{$('Merge Context Update').item.json.active_order_id}}",
+            "variant_id": "={{$('Build Grounding Data').item.json.selected_variant ? $('Build Grounding Data').item.json.selected_variant.id : null}}",
+            "customer_name": "={{$('Determine Escalation Need').item.json.entities.customer_name}}",
+            "customer_phone": "={{$('Determine Escalation Need').item.json.entities.customer_phone}}",
+            "customer_address": "={{$('Determine Escalation Need').item.json.entities.customer_address}}",
+            "payment_method_type": "={{$('Determine Escalation Need').item.json.entities.payment_method_type}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_noop_end",
+      "name": "No Operation - End",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [3920, 600],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [[{ "node": "Get Conversation Context", "type": "main", "index": 0 }]]
+    },
+    "Get Conversation Context": {
+      "main": [[{ "node": "AI - Understand Message", "type": "main", "index": 0 }]]
+    },
+    "AI - Understand Message": {
+      "main": [[{ "node": "Determine Escalation Need", "type": "main", "index": 0 }]]
+    },
+    "Determine Escalation Need": {
+      "main": [[{ "node": "Needs Human Escalation?", "type": "main", "index": 0 }]]
+    },
+    "Needs Human Escalation?": {
+      "main": [
+        [{ "node": "Escalate Conversation", "type": "main", "index": 0 }],
+        [{ "node": "Mentions Product By Name?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Escalate Conversation": {
+      "main": [[{ "node": "Send WhatsApp - Human Handoff Notice", "type": "main", "index": 0 }]]
+    },
+    "Mentions Product By Name?": {
+      "main": [
+        [{ "node": "Search Product By Name", "type": "main", "index": 0 }],
+        [{ "node": "Resolve Product - From Existing Context", "type": "main", "index": 0 }]
+      ]
+    },
+    "Search Product By Name": {
+      "main": [[{ "node": "Resolve Product - From Search", "type": "main", "index": 0 }]]
+    },
+    "Resolve Product - From Search": {
+      "main": [[{ "node": "Merge Context Update", "type": "main", "index": 0 }]]
+    },
+    "Resolve Product - From Existing Context": {
+      "main": [[{ "node": "Merge Context Update", "type": "main", "index": 0 }]]
+    },
+    "Merge Context Update": {
+      "main": [[{ "node": "Has Active Product?", "type": "main", "index": 0 }]]
+    },
+    "Has Active Product?": {
+      "main": [
+        [{ "node": "Get Product", "type": "main", "index": 0 }],
+        [{ "node": "Build Grounding Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Product": {
+      "main": [[{ "node": "Get Product Variants", "type": "main", "index": 0 }]]
+    },
+    "Get Product Variants": {
+      "main": [[{ "node": "Build Grounding Data", "type": "main", "index": 0 }]]
+    },
+    "Build Grounding Data": {
+      "main": [[{ "node": "AI - Compose Reply", "type": "main", "index": 0 }]]
+    },
+    "AI - Compose Reply": {
+      "main": [[{ "node": "Send WhatsApp Reply", "type": "main", "index": 0 }]]
+    },
+    "Send WhatsApp Reply": {
+      "main": [[{ "node": "Determine Order Start", "type": "main", "index": 0 }]]
+    },
+    "Determine Order Start": {
+      "main": [[{ "node": "Should Start Order Creation?", "type": "main", "index": 0 }]]
+    },
+    "Should Start Order Creation?": {
+      "main": [
+        [{ "node": "Execute - Order Creation Workflow", "type": "main", "index": 0 }],
+        [{ "node": "No Operation - End", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

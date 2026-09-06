@@ -1,0 +1,192 @@
+{
+  "name": "11 - Admin Conversation Reply",
+  "nodes": [
+    {
+      "id": "node_webhook",
+      "name": "Admin Reply Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        180,
+        300
+      ],
+      "notes": "يستدعيه تطبيق الأدمن عند إرسال رد يدوي داخل شاشة المحادثات المُصعَّدة. متوقع بالـ body: {conversation_id, wa_id, message_text}.",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "admin/conversation-reply",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_send_whatsapp",
+      "name": "Send WhatsApp - Admin Reply",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        400,
+        300
+      ],
+      "continueOnFail": true,
+      "notes": "يستدعي '00 - Send WhatsApp Message (Shared)' — يتبدّل تلقائياً بين API الرسمي والعقدة الاحتياطية حسب WHATSAPP_PROVIDER.",
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list",
+          "cachedResultName": "00 - Send WhatsApp Message (Shared)"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "to": "={{$('Admin Reply Webhook').item.json.body.wa_id}}",
+            "message_text": "={{$('Admin Reply Webhook').item.json.body.message_text}}"
+          }
+        }
+      }
+    },
+    {
+      "id": "node_if_sent",
+      "name": "Sent Successfully?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        620,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.error}}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_log_message",
+      "name": "Log Outbound Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        840,
+        220
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "تسجيل الرسالة آمن للتكرار (لا ضرر من سطر أرشفة مكرر) — بخلاف الإرسال الفعلي للعميل أعلاه.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.BACKEND_API_TOKEN}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"conversation_id\": $('Admin Reply Webhook').item.json.body.conversation_id, \"direction\": \"outbound\", \"sender\": \"admin\", \"content\": $('Admin Reply Webhook').item.json.body.message_text, \"message_type\": \"text\" } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_respond_success",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1060,
+        220
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "node_respond_failure",
+      "name": "Respond - Failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        840,
+        400
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"success\": false, \"error\": $json.error } }}",
+        "options": {
+          "responseCode": 502
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Admin Reply Webhook": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp - Admin Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp - Admin Reply": {
+      "main": [
+        [
+          {
+            "node": "Sent Successfully?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sent Successfully?": {
+      "main": [
+        [
+          {
+            "node": "Log Outbound Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond - Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Outbound Message": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

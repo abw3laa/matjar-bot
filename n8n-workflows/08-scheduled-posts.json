@@ -1,0 +1,146 @@
+{
+  "name": "08 - Scheduled Posts",
+  "nodes": [
+    {
+      "id": "node_schedule_trigger",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [180, 400],
+      "notes": "دورية الفحص كل 5 دقائق — كافية عملياً لجدولة منشورات، وتقلل الحمل مقارنة بفحص كل دقيقة. عدّلها حسب الحاجة.",
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 5 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_get_due_posts",
+      "name": "Get Due Scheduled Posts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [400, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "نقطة نهاية تكميلية (GET /scheduled-posts/due) تعيد كل المنشورات المجدولة التي حان وقتها ولم تُنفَّذ بعد (status=pending AND scheduled_at <= الآن). إن لم توجد نتائج، الخطوات التالية ببساطة لا تُنفَّذ لأي عنصر.",
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.API_BASE_URL}}/scheduled-posts/due",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node_publish_post",
+      "name": "Publish Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, 400],
+      "continueOnFail": true,
+      "notes": "نفس نقطة النشر المستخدمة في '07 - Facebook Publishing' — الـ Backend يتولى استدعاء Graph API فعلياً. يعمل هذا العنصر تلقائياً لكل عنصر مجدول مستحق وصل من العقدة السابقة (سلوك n8n الافتراضي: تنفيذ لكل item).",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.API_BASE_URL}}/social-posts/{{$json.social_post_id}}/publish",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"target_platforms\": [] } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_if_succeeded",
+      "name": "Publish Succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [840, 400],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.error}}", "operation": "isEmpty" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_mark_executed",
+      "name": "Mark Scheduled Post - Executed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "نقطة نهاية تكميلية (PATCH /scheduled-posts/{id}) لتحديث حالة الجدولة نفسها — منفصلة عن حالة social_post.",
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.API_BASE_URL}}/scheduled-posts/{{$('Get Due Scheduled Posts').item.json.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"status\": \"executed\", \"executed_at\": $now.toISO() } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_mark_failed",
+      "name": "Mark Scheduled Post - Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1060, 500],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "notes": "فشل منشور واحد لا يوقف معالجة بقية المنشورات المستحقة (continueOnFail على عقدة النشر أعلاه).",
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.API_BASE_URL}}/scheduled-posts/{{$('Get Due Scheduled Posts').item.json.id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.BACKEND_API_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"status\": \"failed\" } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [[{ "node": "Get Due Scheduled Posts", "type": "main", "index": 0 }]]
+    },
+    "Get Due Scheduled Posts": {
+      "main": [[{ "node": "Publish Post", "type": "main", "index": 0 }]]
+    },
+    "Publish Post": {
+      "main": [[{ "node": "Publish Succeeded?", "type": "main", "index": 0 }]]
+    },
+    "Publish Succeeded?": {
+      "main": [
+        [{ "node": "Mark Scheduled Post - Executed", "type": "main", "index": 0 }],
+        [{ "node": "Mark Scheduled Post - Failed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}

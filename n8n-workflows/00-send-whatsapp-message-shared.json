@@ -1,0 +1,113 @@
+{
+  "name": "00 - Send WhatsApp Message (Shared)",
+  "nodes": [
+    {
+      "id": "node_trigger",
+      "name": "Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [180, 300],
+      "notes": "نقطة الإرسال الموحّدة الوحيدة في كل المنظومة — كل Workflow آخر (02, 03, 06, 11) يستدعي هذا بدل استدعاء Graph API مباشرة. هذا هو ما يجعل التبديل لعقدة احتياطية مجرد متغير بيئة واحد بدل تعديل كل Workflow.",
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            { "name": "to", "type": "string", "description": "رقم الهاتف/wa_id بصيغة دولية بلا +، مثال 9665xxxxxxx" },
+            { "name": "message_text", "type": "string" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_if_provider",
+      "name": "Which Provider?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [400, 300],
+      "notes": "القيمة الافتراضية عند عدم ضبط WHATSAPP_PROVIDER هي cloud_api (السلوك الحالي بلا تغيير). لتفعيل العقدة الاحتياطية: اضبط WHATSAPP_PROVIDER=evolution_api في n8n — لا تعديل آخر مطلوب في أي Workflow.",
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$env.WHATSAPP_PROVIDER}}", "value2": "evolution_api", "operation": "equal" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node_send_evolution",
+      "name": "Send via Evolution API (QR)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, 200],
+      "continueOnFail": true,
+      "notes": "بديل احتياطي مبني على Evolution API (ربط عبر مسح QR، بلا حاجة لموافقة Meta Business أو فوترة لكل رسالة). يتطلب نشر Evolution API ذاتياً وربط رقم عبر QR مرة واحدة من لوحة /manager الخاصة بها.",
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.EVOLUTION_API_URL}}/message/sendText/{{$env.EVOLUTION_INSTANCE}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "apikey", "value": "={{$env.EVOLUTION_API_KEY}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"number\": $json.to, \"text\": $json.message_text } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_send_cloud",
+      "name": "Send via WhatsApp Cloud API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [620, 400],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v20.0/{{$env.WHATSAPP_PHONE_NUMBER_ID}}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{$env.WHATSAPP_ACCESS_TOKEN}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"messaging_product\": \"whatsapp\", \"to\": $json.to, \"type\": \"text\", \"text\": { \"body\": $json.message_text } } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "node_normalize_result",
+      "name": "Normalize Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 300],
+      "notes": "عقدة التقاء آمنة (تصل إليها كلتا العقدتين) — توحّد شكل استجابة مزوّدين مختلفين تماماً في مخرج واحد ثابت، حتى لا يحتاج أي Workflow مستدعٍ لمعرفة أي مزوّد استُخدم فعلياً.",
+      "parameters": {
+        "jsCode": "const isError = !!$json.error;\nreturn [{ json: { success: !isError, error: isError ? (typeof $json.error === 'string' ? $json.error : JSON.stringify($json.error)) : null } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Workflow Trigger": {
+      "main": [[{ "node": "Which Provider?", "type": "main", "index": 0 }]]
+    },
+    "Which Provider?": {
+      "main": [
+        [{ "node": "Send via Evolution API (QR)", "type": "main", "index": 0 }],
+        [{ "node": "Send via WhatsApp Cloud API", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send via Evolution API (QR)": {
+      "main": [[{ "node": "Normalize Result", "type": "main", "index": 0 }]]
+    },
+    "Send via WhatsApp Cloud API": {
+      "main": [[{ "node": "Normalize Result", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "pinData": {}
+}
