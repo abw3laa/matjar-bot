@@ -21,6 +21,7 @@ matjar-bot/
 │       └── 001_init_schema.sql  مخطط قاعدة البيانات الكامل (PostgreSQL)
 ├── api/
 │   └── openapi.yaml             مواصفة الـ Backend API (32+ نقطة نهاية، مصدر الحقيقة الوحيد)
+├── backend/                     خدمة FastAPI الفعلية التي تصل PostgreSQL وتخدم التطبيق وn8n
 ├── n8n-workflows/
 │   └── 00..11-*.json            كل الـ Workflows (00 = إرسال WhatsApp المشترك)، جاهزة للاستيراد المباشر
 └── admin-app/                   تطبيق الأدمن (Expo + React Native + TypeScript)
@@ -30,7 +31,7 @@ matjar-bot/
 ## ترتيب النشر الفعلي المقترح
 
 1. **قاعدة البيانات**: نفّذ `database/migrations/001_init_schema.sql` على PostgreSQL فارغة.
-2. **Backend API**: ابنِ خدمة تطبّق `api/openapi.yaml` حرفياً (لم تُبنَ الشيفرة الفعلية بعد — هذه مواصفة العقد فقط).
+2. **Backend API**: شغّل الخدمة الموجودة في `backend/` بعد تطبيق migrations قاعدة البيانات، واضبط `DATABASE_URL` و`JWT_SECRET` و`INTERNAL_API_TOKEN`.
 3. **n8n**: استورد ملفات `n8n-workflows/` بالترتيب الرقمي **بدءاً من 00**، واربط عُقد Execute Workflow ببعضها (كل عقدة بها ملاحظة توضح أي Workflow تستدعي)، واضبط متغيرات البيئة:
    - أساسية: `API_BASE_URL`, `BACKEND_API_TOKEN`, `AI_SERVICE_URL`, `AI_SERVICE_TOKEN`
    - WhatsApp (رسمي): `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`
@@ -44,7 +45,7 @@ matjar-bot/
 |---|---|
 | Architecture + DB Schema + OpenAPI | ✅ مكتمل (31 نقطة نهاية، بعد عدة جولات تنظيف اكتشفت خللاً حقيقياً في تكرار `components` وأصلحته) |
 | n8n Workflows | ✅ 11 Workflow (10 الأصلية + `11-admin-conversation-reply` لخدمة شاشة المحادثات) |
-| Backend API (الشيفرة الفعلية) | ⬜ لم تُبنَ — العقد موثّق في `api/openapi.yaml` فقط |
+| Backend API (الشيفرة الفعلية) | 🟡 الإصدار الأول مبني في `backend/` — يحتاج ربط PostgreSQL وإكمال تكاملات التخزين/النشر/AI |
 | AI Service (endpoints `/nlu` و`/compose-reply`) | ⬜ لم تُبنَ — عقد مفترض فقط، موثّق داخل ملاحظات Workflow 02 |
 | تطبيق الأدمن | 🟡 جزئي — تسجيل الدخول، الطلبات (قائمة+تفاصيل)، النشر، والمحادثات المُصعَّدة جاهزة؛ الباقي في `admin-app/README.md` |
 | بناء APK تلقائي (CI/CD) | ✅ مكتمل — `.github/workflows/eas-build-android.yml` |
