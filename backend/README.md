@@ -23,6 +23,7 @@ Apply migrations in order:
 psql "$DATABASE_URL" -f ../database/migrations/001_init_schema.sql
 psql "$DATABASE_URL" -f ../database/migrations/002_admin_users.sql
 psql "$DATABASE_URL" -f ../database/migrations/003_admin_devices.sql
+psql "$DATABASE_URL" -f ../database/migrations/004_api_idempotency.sql
 ```
 
 Create the first admin without putting a password in the shell history:

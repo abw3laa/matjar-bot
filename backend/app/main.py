@@ -4,13 +4,14 @@ from typing import Any, Annotated
 from uuid import UUID
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .auth import create_access_token, login as authenticate
 from .config import get_settings
 from .db import close_pool, connection
+from .idempotency import claim_or_replay, complete as complete_idempotency
 from .schemas import (
     ContextPatch, CreateMessageRequest, CreateOrderRequest, CreateSocialPostRequest,
     CustomerDataPatch, LoginRequest, LoginResponse, OrderDecisionRequest,
@@ -343,9 +344,12 @@ def update_payment_method(order_id: UUID, payload: dict[str, UUID]) -> dict:
     return row
 
 
-@app.post("/v1/orders/{order_id}/payment-proof", status_code=201, dependencies=[Depends(require_service_or_user)], tags=["Orders"])
-def add_payment_proof(order_id: UUID, payload: PaymentProofRequest) -> dict:
+@app.post("/v1/orders/{order_id}/payment-proof", status_code=201, response_model=None, dependencies=[Depends(require_service_or_user)], tags=["Orders"])
+def add_payment_proof(order_id: UUID, payload: PaymentProofRequest, idempotency_key: str | None = Header(None, alias="Idempotency-Key")) -> dict | JSONResponse:
     with connection() as conn:
+        replay = claim_or_replay(conn, f"payment-proof:{order_id}", idempotency_key)
+        if replay:
+            return replay
         with conn.transaction():
             row = conn.execute(
                 """INSERT INTO payment_proofs (order_id, file_url, file_type, file_hash)
@@ -355,15 +359,19 @@ def add_payment_proof(order_id: UUID, payload: PaymentProofRequest) -> dict:
             if not row:
                 raise HTTPException(404, "Order not found")
             conn.execute("UPDATE orders SET status = 'PENDING_ADMIN_REVIEW' WHERE id = %s", (order_id,))
+            complete_idempotency(conn, f"payment-proof:{order_id}", idempotency_key, 201, row)
     return row
 
 
-@app.post("/v1/orders/{order_id}/decision", dependencies=[Depends(require_auth)], tags=["Orders"])
-def order_decision(order_id: UUID, payload: OrderDecisionRequest) -> dict:
+@app.post("/v1/orders/{order_id}/decision", response_model=None, dependencies=[Depends(require_auth)], tags=["Orders"])
+def order_decision(order_id: UUID, payload: OrderDecisionRequest, idempotency_key: str | None = Header(None, alias="Idempotency-Key")) -> dict | JSONResponse:
     target = {"approve": "APPROVED", "reject": "REJECTED", "out_of_stock": "OUT_OF_STOCK"}[payload.decision]
     if payload.decision == "approve" and not payload.tracking_number:
         raise HTTPException(422, "tracking_number is required for approval")
     with connection() as conn:
+        replay = claim_or_replay(conn, f"order-decision:{order_id}", idempotency_key)
+        if replay:
+            return replay
         with conn.transaction():
             order = conn.execute("SELECT status FROM orders WHERE id = %s FOR UPDATE", (order_id,)).fetchone()
             if not order:
@@ -374,7 +382,9 @@ def order_decision(order_id: UUID, payload: OrderDecisionRequest) -> dict:
             conn.execute("INSERT INTO order_status_history (order_id, from_status, to_status, changed_by, changed_by_id) VALUES (%s, %s, %s, 'admin', %s)", (order_id, order["status"], target, payload.admin_id))
             if payload.tracking_number:
                 conn.execute("INSERT INTO tracking_numbers (order_id, tracking_number, carrier, entered_by_admin_id) VALUES (%s, %s, %s, %s) ON CONFLICT (order_id) DO UPDATE SET tracking_number = EXCLUDED.tracking_number, carrier = EXCLUDED.carrier", (order_id, payload.tracking_number, payload.carrier, payload.admin_id))
-            return conn.execute("SELECT id, status FROM orders WHERE id = %s", (order_id,)).fetchone()
+            result = conn.execute("SELECT id, status FROM orders WHERE id = %s", (order_id,)).fetchone()
+            complete_idempotency(conn, f"order-decision:{order_id}", idempotency_key, 200, result)
+            return result
 
 
 @app.get("/v1/payment-methods", dependencies=[Depends(require_service_or_user)], tags=["Payments"])
