@@ -84,6 +84,32 @@ class UploadPresignRequest(BaseModel):
     order_id: UUID | None = None
 
 
+class IncomingFacebookComment(BaseModel):
+    facebook_comment_id: str
+    facebook_post_id: str | None = None
+    platform: Literal["facebook", "instagram"] = "facebook"
+    commenter_facebook_id: str
+    commenter_name: str | None = None
+    comment_text: str
+
+
+class ScheduledPostPatch(BaseModel):
+    status: Literal["executed", "failed"]
+    executed_at: datetime | None = None
+
+
+class AdminDeviceRequest(BaseModel):
+    expo_push_token: str = Field(min_length=1, max_length=512)
+
+
+class AdminNotificationRequest(BaseModel):
+    type: str
+    order_id: UUID | None = None
+    title: str
+    body: str
+    data: dict[str, Any] = {}
+
+
 class PaymentMethodPatch(BaseModel):
     is_enabled: bool | None = None
     details: dict[str, Any] | None = None

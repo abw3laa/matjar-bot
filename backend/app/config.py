@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     internal_api_token: str = ""
     cors_origins: str = "http://localhost:8081,http://localhost:19006"
     upload_base_url: str = "https://storage.example.com"
+    expo_access_token: str = ""
+    social_publish_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

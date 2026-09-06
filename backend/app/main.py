@@ -3,6 +3,7 @@ import json
 from typing import Any, Annotated
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -14,7 +15,8 @@ from .schemas import (
     ContextPatch, CreateMessageRequest, CreateOrderRequest, CreateSocialPostRequest,
     CustomerDataPatch, LoginRequest, LoginResponse, OrderDecisionRequest,
     PaymentMethodPatch, PaymentProofRequest, ResolveConversationRequest,
-    UploadPresignRequest,
+    UploadPresignRequest, IncomingFacebookComment, ScheduledPostPatch,
+    AdminDeviceRequest, AdminNotificationRequest,
 )
 from .auth import require_auth, require_service_or_user
 
@@ -444,3 +446,133 @@ def schedule_post(post_id: UUID, body: dict[str, datetime]) -> dict:
 def due_posts() -> list[dict]:
     with connection() as conn:
         return conn.execute("SELECT * FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= now() ORDER BY scheduled_at").fetchall()
+
+
+@app.patch("/v1/scheduled-posts/{scheduled_post_id}", dependencies=[Depends(require_service_or_user)], tags=["Social"])
+def update_scheduled_post(scheduled_post_id: UUID, payload: ScheduledPostPatch) -> dict:
+    executed_at = payload.executed_at or (datetime.now(timezone.utc) if payload.status == "executed" else None)
+    with connection() as conn:
+        with conn.transaction():
+            row = conn.execute(
+                """UPDATE scheduled_posts SET status = %s, executed_at = %s
+                   WHERE id = %s RETURNING *""",
+                (payload.status, executed_at, scheduled_post_id),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "Scheduled post not found")
+            if payload.status == "executed":
+                conn.execute(
+                    "UPDATE social_posts SET status = 'published' WHERE id = %s",
+                    (row["social_post_id"],),
+                )
+            elif payload.status == "failed":
+                conn.execute(
+                    "UPDATE social_posts SET status = 'failed' WHERE id = %s",
+                    (row["social_post_id"],),
+                )
+    return row
+
+
+@app.post("/v1/social-posts/{post_id}/publish", dependencies=[Depends(require_service_or_user)], tags=["Social"])
+def publish_social_post(post_id: UUID, body: dict[str, Any] | None = None) -> dict:
+    with connection() as conn:
+        post = conn.execute("SELECT * FROM social_posts WHERE id = %s", (post_id,)).fetchone()
+    if not post:
+        raise HTTPException(404, "Social post not found")
+    # Never claim a post was published without a configured platform adapter and credentials.
+    if not settings.social_publish_enabled:
+        raise HTTPException(501, "Social publishing is not configured; enable the platform adapter first")
+    raise HTTPException(501, "No social platform adapter is installed yet")
+
+
+@app.post("/v1/facebook-comments", status_code=201, dependencies=[Depends(require_service_or_user)], tags=["FacebookComments"])
+def create_facebook_comment(payload: IncomingFacebookComment) -> dict:
+    with connection() as conn:
+        social_post_id = None
+        if payload.facebook_post_id:
+            linked = conn.execute(
+                "SELECT id FROM social_posts WHERE published_post_id = %s LIMIT 1",
+                (payload.facebook_post_id,),
+            ).fetchone()
+            social_post_id = linked["id"] if linked else None
+        row = conn.execute(
+            """INSERT INTO facebook_comments
+               (facebook_comment_id, platform, social_post_id, commenter_facebook_id, comment_text)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT (facebook_comment_id) DO UPDATE SET comment_text = EXCLUDED.comment_text
+               RETURNING *""",
+            (payload.facebook_comment_id, payload.platform, social_post_id, payload.commenter_facebook_id, payload.comment_text),
+        ).fetchone()
+    return row
+
+
+@app.post("/v1/facebook-comments/{comment_id}/reply", dependencies=[Depends(require_service_or_user)], tags=["FacebookComments"])
+def reply_to_facebook_comment(comment_id: UUID, body: dict[str, Any] | None = None) -> dict:
+    with connection() as conn:
+        comment = conn.execute("SELECT * FROM facebook_comments WHERE id = %s", (comment_id,)).fetchone()
+        if not comment:
+            raise HTTPException(404, "Facebook comment not found")
+        if comment["replied"]:
+            return {"replied": False, "already_replied": True}
+    raise HTTPException(501, "Meta Graph API reply adapter is not configured")
+
+
+@app.post("/v1/messenger/send-whatsapp-redirect", dependencies=[Depends(require_service_or_user)], tags=["Messenger"])
+def send_whatsapp_redirect(body: dict[str, Any]) -> dict:
+    commenter_id = body.get("commenter_facebook_id")
+    comment_id = body.get("facebook_comment_id")
+    if not commenter_id or not comment_id:
+        raise HTTPException(422, "commenter_facebook_id and facebook_comment_id are required")
+    with connection() as conn:
+        comment = conn.execute("SELECT id FROM facebook_comments WHERE id = %s", (comment_id,)).fetchone()
+        if not comment:
+            raise HTTPException(404, "Facebook comment not found")
+        existing = conn.execute(
+            "SELECT id FROM messenger_conversations WHERE commenter_facebook_id = %s AND facebook_comment_id = %s LIMIT 1",
+            (commenter_id, comment_id),
+        ).fetchone()
+        if existing:
+            return {"sent": False, "already_sent": True}
+    raise HTTPException(501, "Messenger/WhatsApp redirect adapter is not configured")
+
+
+@app.post("/v1/admin/devices", dependencies=[Depends(require_auth)], tags=["Admin"])
+def register_admin_device(payload: AdminDeviceRequest, user: Auth) -> dict:
+    admin_id = None
+    try:
+        admin_id = UUID(str(user["sub"]))
+    except (ValueError, KeyError):
+        pass
+    with connection() as conn:
+        row = conn.execute(
+            """INSERT INTO admin_devices (admin_id, expo_push_token)
+               VALUES (%s, %s)
+               ON CONFLICT (expo_push_token) DO UPDATE SET admin_id = EXCLUDED.admin_id, is_active = TRUE, updated_at = now()
+               RETURNING id, expo_push_token, is_active, created_at""",
+            (admin_id, payload.expo_push_token),
+        ).fetchone()
+    return row
+
+
+@app.post("/v1/admin/notifications", dependencies=[Depends(require_service_or_user)], tags=["Admin"])
+def send_admin_notification(payload: AdminNotificationRequest) -> dict:
+    with connection() as conn:
+        devices = conn.execute("SELECT id, expo_push_token FROM admin_devices WHERE is_active = TRUE").fetchall()
+    if not devices:
+        return {"sent": 0, "failed": 0, "detail": "No active admin devices"}
+    messages = [
+        {"to": device["expo_push_token"], "title": payload.title, "body": payload.body,
+         "data": {"type": payload.type, "order_id": str(payload.order_id) if payload.order_id else None, **payload.data}}
+        for device in devices
+    ]
+    headers = {"Content-Type": "application/json"}
+    if settings.expo_access_token:
+        headers["Authorization"] = f"Bearer {settings.expo_access_token}"
+    try:
+        response = httpx.post("https://exp.host/--/api/v2/push/send", json=messages, headers=headers, timeout=15)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Expo Push API unavailable") from exc
+    tickets = response.json().get("data", [])
+    failed = sum(1 for ticket in tickets if ticket.get("status") == "error")
+    return {"sent": len(tickets) - failed, "failed": failed}

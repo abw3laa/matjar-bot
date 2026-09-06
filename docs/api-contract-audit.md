@@ -2,38 +2,45 @@
 
 ## Summary
 
-The OpenAPI contract contains **35 operations** across the documented business paths. The initial FastAPI implementation contains **31 operations**. After normalizing path-parameter naming (`{productId}` versus `{product_id}`), **28 operations match the contract** and **7 documented operations are still missing**.
+The OpenAPI contract contains **35 operations** across the documented business paths. The FastAPI implementation now exposes **38 operations**, including all **35 documented operations** plus three operational endpoints: `/health`, `/ready`, and `/auth/login`.
 
-The implementation also exposes three intentional operational endpoints that are not currently listed in `api/openapi.yaml`: `/health`, `/ready`, and `/auth/login`.
+Path parameters were compared independently of naming style (`{productId}` versus `{product_id}`). The contract audit now reports **zero missing documented operations**.
 
-## Missing contract operations
+## Newly implemented operations
 
-| Method | Path | Reason / next implementation area |
+| Method | Path | Implementation status |
 |---|---|---|
-| POST | `/social-posts/{id}/publish` | Requires Facebook/Instagram/TikTok credentials and platform adapters; should not be a fake success. |
-| PATCH | `/scheduled-posts/{id}` | Needed by the scheduled-post n8n workflow to mark execution as `executed` or `failed`. |
-| POST | `/facebook-comments` | Inbound comment persistence from n8n. |
-| POST | `/facebook-comments/{id}/reply` | Idempotent public reply with platform-specific Graph API integration. |
-| POST | `/messenger/send-whatsapp-redirect` | Idempotent Messenger-to-WhatsApp redirect; requires Meta/WhatsApp integration. |
-| POST | `/admin/devices` | Persist Expo push tokens for admin devices. |
-| POST | `/admin/notifications` | Send push notifications through Expo Push API. |
+| PATCH | `/scheduled-posts/{id}` | Persists `executed`/`failed`, sets `executed_at`, and synchronizes the social post status. |
+| POST | `/admin/devices` | Persists Expo push tokens per authenticated admin device. |
+| POST | `/admin/notifications` | Sends notifications through Expo Push API when active devices exist. |
+| POST | `/facebook-comments` | Idempotently upserts inbound Facebook/Instagram comments. |
+| POST | `/facebook-comments/{id}/reply` | Idempotency-aware guard; returns `501` until the Meta Graph adapter is configured. |
+| POST | `/messenger/send-whatsapp-redirect` | Idempotency-aware guard; returns `501` until Messenger/WhatsApp credentials and adapter are configured. |
+| POST | `/social-posts/{id}/publish` | Returns `501` until a platform adapter and credentials are configured; never reports a false publish success. |
 
-## Implemented contract operations
+## Important integration limits
 
-The following areas match the contract: catalog search and lookup, variant availability, conversation resolution/list/detail/context/escalation/close, message creation and history, order list/create/detail/customer data/payment method/payment proof/decision, payment methods, upload presign guard, social post list/create/caption/schedule, and due scheduled posts.
+The routes now exist and validate their inputs, but three operations intentionally do not claim external success without credentials:
 
-## Important findings beyond route coverage
+- Social publishing requires platform-specific Facebook/Instagram/TikTok adapters and credentials.
+- Public comment replies require Meta Graph API credentials and signature-safe integration.
+- Messenger-to-WhatsApp redirects require the relevant Meta and WhatsApp configuration.
 
-1. **`/auth/login` is implemented but absent from OpenAPI.** It should be added to the contract before production use so the admin app's authentication is documented.
-2. **The OpenAPI server URL is a placeholder** (`https://api.internal.example.com/v1`). Deployment must replace it with the real HTTPS API URL.
-3. **Upload presigning currently returns `501` intentionally** until S3-compatible storage credentials are configured.
-4. **Caption generation currently returns a deterministic fallback** until the AI service is connected; it does not claim to have called an AI model.
-5. **Social publishing is intentionally not implemented** until Meta/TikTok credentials and platform-specific adapters are configured.
-6. **Route coverage is not the same as production readiness.** Database integration tests, idempotency persistence, webhook signature verification, rate limiting, and token refresh still need to be added before handling real customer or payment data.
+These are explicit `501 Not Implemented` integration boundaries rather than silent mocks.
+
+## Additional changes
+
+- Added `database/migrations/003_admin_devices.sql` for Expo device tokens.
+- Added `EXPO_ACCESS_TOKEN` and `SOCIAL_PUBLISH_ENABLED` to the backend environment example.
+- Updated backend setup documentation with the new migration.
 
 ## Verification
 
 - Python compilation: passed.
-- FastAPI `/health` smoke test: passed.
-- n8n workflow JSON parsing: passed.
-- Audit script: `/tmp/api_contract_audit.py`.
+- API contract audit: **35 documented operations, 0 missing**.
+- n8n workflow JSON parsing: passed in the previous audit.
+- `git diff --check`: passed.
+
+## Remaining production hardening
+
+Route coverage is not the same as production readiness. Database integration tests, durable idempotency response storage, webhook signature verification, rate limiting, token refresh/revocation, object storage presigning, and the external platform adapters still need to be completed before handling real customer or payment data.
