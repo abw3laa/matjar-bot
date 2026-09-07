@@ -17,3 +17,4 @@ ai-service/.venv/
 ai-service/__pycache__/
 ai-service/**/*.pyc
 ai-service/.pytest_cache/
+deploy/.env
