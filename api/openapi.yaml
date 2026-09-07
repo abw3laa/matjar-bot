@@ -17,6 +17,53 @@ security:
 paths:
 
   # ===================================================================
+  # 0. AUTHENTICATION API
+  # ===================================================================
+  /auth/login:
+    post:
+      summary: تسجيل دخول الأدمن وإصدار access/refresh tokens
+      security: []
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200": { description: تم تسجيل الدخول }
+        "401": { description: بيانات الدخول غير صحيحة }
+
+  /auth/refresh:
+    post:
+      summary: تدوير refresh token وإصدار access token جديد
+      security: []
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200": { description: تم تدوير التوكن }
+        "401": { description: refresh token غير صالح أو منتهي }
+
+  /auth/logout:
+    post:
+      summary: إبطال access token الحالي
+      tags: [Auth]
+      responses:
+        "204": { description: تم تسجيل الخروج }
+
+  # ===================================================================
   # 1. CATALOG API
   # ===================================================================
   /products/{productId}:

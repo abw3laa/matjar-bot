@@ -425,3 +425,11 @@ NEW
 ## ملاحظة ختامية
 
 هذه الوثيقة تغطي حصراً المتطلبات المذكورة (WhatsApp + Facebook + n8n + تطبيق الأدمن)، دون إضافة قنوات أو ميزات غير مطلوبة. الخطوة التالية المنطقية بعد اعتماد هذا التصميم: بناء الـ Backend API service فعلياً (schema migration files)، ثم تصميم أول Workflow (WhatsApp Incoming Messages) في n8n كنقطة بداية قابلة للاختبار.
+
+
+## 10. Security controls added before deployment
+
+- The Backend issues short-lived access JWTs and rotating refresh tokens. Logout records the access-token `jti` in PostgreSQL so it cannot be reused.
+- Login, order creation, and inbound comment ingestion have an in-process rate limiter. A shared Redis-backed limiter is required before running multiple API workers.
+- The WhatsApp Cloud API and Facebook/Instagram comment POST workflows now begin with an HMAC-SHA256 signature verification node. Configure `META_APP_SECRET` in n8n and keep the webhook's raw request body available; do not treat a re-serialized JSON object as a production-grade raw-body substitute.
+- The AI service fails closed when credentials are absent and is instructed to ground commercial claims only in Backend-provided data.

@@ -342,6 +342,20 @@
       "parameters": {
         "jsCode": "const body = $input.item.json.body;\n\nif (!body || body.event !== 'messages.upsert' || !body.data) {\n  return [{ json: { ignore: true, reason: 'not_a_new_message_event' } }];\n}\n\nconst data = body.data;\nif (!data.key || data.key.fromMe) {\n  return [{ json: { ignore: true, reason: 'own_message_or_missing_key' } }];\n}\n\nconst remoteJid = data.key.remoteJid || '';\nconst waId = remoteJid.split('@')[0];\nconst msg = data.message || {};\n\nlet type = null, text = null, mediaId = null, mediaMimeType = null;\n\nif (msg.conversation) {\n  type = 'text';\n  text = msg.conversation;\n} else if (msg.extendedTextMessage && msg.extendedTextMessage.text) {\n  type = 'text';\n  text = msg.extendedTextMessage.text;\n} else if (msg.imageMessage) {\n  type = 'image';\n  text = msg.imageMessage.caption || null;\n  mediaMimeType = msg.imageMessage.mimetype || 'image/jpeg';\n  mediaId = data.key.id;\n} else if (msg.documentMessage) {\n  type = 'document';\n  text = msg.documentMessage.caption || null;\n  mediaMimeType = msg.documentMessage.mimetype || 'application/pdf';\n  mediaId = data.key.id;\n}\n\nif (!type) {\n  return [{ json: { ignore: true, reason: 'unsupported_message_subtype' } }];\n}\n\nreturn [{ json: {\n  ignore: false,\n  wa_id: waId,\n  from: waId,\n  contact_name: data.pushName || null,\n  message_id: data.key.id,\n  timestamp: data.messageTimestamp || null,\n  type,\n  text,\n  media_id: mediaId,\n  media_mime_type: mediaMimeType\n} }];"
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst headers = $json.headers || {};\nconst signature = headers['x-hub-signature-256'] || headers['X-Hub-Signature-256'] || '';\nconst appSecret = $env.META_APP_SECRET || '';\nconst body = $json.body ?? $json;\nif (!appSecret || !signature || !body) {\n  throw new Error('Meta webhook signature configuration or header is missing');\n}\nconst raw = typeof body === 'string' ? body : JSON.stringify(body);\nconst expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(raw).digest('hex');\nif (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {\n  throw new Error('Invalid Meta webhook signature');\n}\nreturn [{ json: $json }];"
+      },
+      "id": "verify_meta_signature_01",
+      "name": "Verify Meta Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        380
+      ],
+      "notes": "تحقق HMAC-SHA256 من X-Hub-Signature-256 قبل معالجة أي حدث Meta. اضبط META_APP_SECRET في n8n. يعتمد على raw body إن وفره Webhook node؛ لا تستخدم JSON معاد التسلسل في إنتاج حساس دون raw body."
     }
   ],
   "connections": {
@@ -378,7 +392,7 @@
       "main": [
         [
           {
-            "node": "Respond - Event Received",
+            "node": "Verify Meta Signature",
             "type": "main",
             "index": 0
           }
@@ -492,6 +506,17 @@
         [
           {
             "node": "Has Message Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Meta Signature": {
+      "main": [
+        [
+          {
+            "node": "Respond - Event Received",
             "type": "main",
             "index": 0
           }

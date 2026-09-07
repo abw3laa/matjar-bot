@@ -24,6 +24,7 @@ psql "$DATABASE_URL" -f ../database/migrations/001_init_schema.sql
 psql "$DATABASE_URL" -f ../database/migrations/002_admin_users.sql
 psql "$DATABASE_URL" -f ../database/migrations/003_admin_devices.sql
 psql "$DATABASE_URL" -f ../database/migrations/004_api_idempotency.sql
+psql "$DATABASE_URL" -f ../database/migrations/005_auth_tokens.sql
 ```
 
 Create the first admin without putting a password in the shell history:
@@ -35,6 +36,8 @@ DATABASE_URL="$DATABASE_URL" python scripts/create_admin.py
 ## Configuration
 
 Copy `.env.example` to `.env` and set a long random `JWT_SECRET`, a separate `INTERNAL_API_TOKEN`, and the PostgreSQL URL. Do not commit `.env` or production credentials.
+
+Access tokens expire after `JWT_EXPIRE_MINUTES` (default 60). The refresh endpoint rotates refresh tokens, and logout revokes the current access token. The in-process rate limiter protects login, order creation, and inbound comment routes; use a shared Redis-backed limiter before running multiple API workers.
 
 ## Current scope
 

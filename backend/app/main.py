@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, st
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .auth import create_access_token, login as authenticate
+from .auth import login as authenticate, refresh as rotate_refresh, revoke_access_token
 from .config import get_settings
 from .db import close_pool, connection
 from .idempotency import claim_or_replay, complete as complete_idempotency
@@ -17,9 +17,10 @@ from .schemas import (
     CustomerDataPatch, LoginRequest, LoginResponse, OrderDecisionRequest,
     PaymentMethodPatch, PaymentProofRequest, ResolveConversationRequest,
     UploadPresignRequest, IncomingFacebookComment, ScheduledPostPatch,
-    AdminDeviceRequest, AdminNotificationRequest,
+    AdminDeviceRequest, AdminNotificationRequest, RefreshRequest,
 )
 from .auth import require_auth, require_service_or_user
+from .rate_limit import rate_limit
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="1.0.0", description="Matjar Bot backend API")
@@ -55,10 +56,22 @@ def readiness() -> dict[str, str]:
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
 
-@app.post("/v1/auth/login", response_model=LoginResponse, tags=["Auth"])
+@app.post("/v1/auth/login", response_model=LoginResponse, dependencies=[Depends(rate_limit("auth-login", 10, 60))], tags=["Auth"])
 def login(payload: LoginRequest) -> LoginResponse:
-    token = authenticate(payload.email, payload.password)
-    return LoginResponse(access_token=token, expires_in=settings.jwt_expire_minutes * 60)
+    access, refresh = authenticate(payload.email, payload.password)
+    return LoginResponse(access_token=access, refresh_token=refresh, expires_in=settings.jwt_expire_minutes * 60)
+
+
+@app.post("/v1/auth/refresh", response_model=LoginResponse, dependencies=[Depends(rate_limit("auth-refresh", 20, 60))], tags=["Auth"])
+def refresh_token(payload: RefreshRequest) -> LoginResponse:
+    access, refresh = rotate_refresh(payload.refresh_token)
+    return LoginResponse(access_token=access, refresh_token=refresh, expires_in=settings.jwt_expire_minutes * 60)
+
+
+@app.post("/v1/auth/logout", status_code=204, dependencies=[Depends(require_auth)], tags=["Auth"])
+def logout(user: Auth) -> Response:
+    revoke_access_token(user)
+    return Response(status_code=204)
 
 
 @app.get("/v1/products/search", dependencies=[Depends(require_service_or_user)], tags=["Catalog"])
@@ -281,7 +294,7 @@ def get_order(order_id: UUID) -> dict:
     return order
 
 
-@app.post("/v1/orders", status_code=201, dependencies=[Depends(require_service_or_user)], tags=["Orders"])
+@app.post("/v1/orders", status_code=201, dependencies=[Depends(require_service_or_user), Depends(rate_limit("order-create", 60, 60))], tags=["Orders"])
 def create_order(payload: CreateOrderRequest, response: Response) -> dict:
     with connection() as conn:
         with conn.transaction():
@@ -495,7 +508,7 @@ def publish_social_post(post_id: UUID, body: dict[str, Any] | None = None) -> di
     raise HTTPException(501, "No social platform adapter is installed yet")
 
 
-@app.post("/v1/facebook-comments", status_code=201, dependencies=[Depends(require_service_or_user)], tags=["FacebookComments"])
+@app.post("/v1/facebook-comments", status_code=201, dependencies=[Depends(require_service_or_user), Depends(rate_limit("facebook-comment", 120, 60))], tags=["FacebookComments"])
 def create_facebook_comment(payload: IncomingFacebookComment) -> dict:
     with connection() as conn:
         social_post_id = None
