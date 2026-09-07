@@ -2,7 +2,6 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -20,9 +19,17 @@ services:
     build:
       context: ../backend
     restart: unless-stopped
-    env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      APP_NAME: ${APP_NAME}
+      ENVIRONMENT: ${ENVIRONMENT}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      UPLOAD_BASE_URL: ${UPLOAD_BASE_URL}
+      EXPO_ACCESS_TOKEN: ${EXPO_ACCESS_TOKEN}
+      SOCIAL_PUBLISH_ENABLED: ${SOCIAL_PUBLISH_ENABLED}
       HOST: 0.0.0.0
       PORT: 8000
     depends_on:
@@ -37,10 +44,14 @@ services:
     build:
       context: ../ai-service
     restart: unless-stopped
-    env_file: .env
     environment:
       HOST: 0.0.0.0
       PORT: 8010
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      AI_MODEL: ${AI_MODEL}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS}
     ports:
       - "127.0.0.1:8010:8010"
     networks: [matjar]
