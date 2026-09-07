@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
 from app.idempotency import claim_or_replay
+from app.auth import require_service_or_user
 from app.main import app
 
 
@@ -97,3 +98,11 @@ def test_idempotency_rejects_in_progress_duplicate() -> None:
         assert exc.status_code == 409
     else:
         raise AssertionError("Expected an in-progress duplicate to be rejected")
+
+
+def test_internal_token_can_be_sent_as_bearer(monkeypatch) -> None:
+    from app import auth
+    monkeypatch.setattr(auth.get_settings(), "internal_api_token", "internal-secret")
+    assert require_service_or_user(authorization="Bearer internal-secret") == {
+        "sub": "internal-service", "role": "service"
+    }

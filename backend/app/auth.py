@@ -57,7 +57,10 @@ def require_service_or_user(
     x_internal_token: Annotated[str | None, Header()] = None,
 ) -> dict:
     settings = get_settings()
-    if settings.internal_api_token and x_internal_token == settings.internal_api_token:
+    if settings.internal_api_token and (
+        x_internal_token == settings.internal_api_token
+        or authorization == f"Bearer {settings.internal_api_token}"
+    ):
         return {"sub": "internal-service", "role": "service"}
     return require_auth(authorization)
 
