@@ -12,3 +12,8 @@ backend/.venv/
 backend/__pycache__/
 backend/**/*.pyc
 backend/.pytest_cache/
+ai-service/.env
+ai-service/.venv/
+ai-service/__pycache__/
+ai-service/**/*.pyc
+ai-service/.pytest_cache/

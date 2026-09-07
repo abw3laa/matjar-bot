@@ -19,7 +19,7 @@ Workflows وتطبيق الأدمن **يفترضان** أن هاتين الخد�
 | Architecture + DB Schema | ✅ كامل | `docs/architecture.md`, `database/migrations/001_init_schema.sql` |
 | OpenAPI (عقد الـ API) | ✅ كامل (32+ نقطة) | `api/openapi.yaml` — **عقد فقط، لا شيفرة خادم فعلية** |
 | Backend API (شيفرة فعلية) | ❌ غير مبني | أكبر عمل يدوي متبقٍ — راجع القسم 3 |
-| AI Service (`/nlu`, `/compose-reply`) | ❌ غير مبني | عقد افتراضي فقط |
+| AI Service (`/nlu`, `/compose-reply`) | 🟡 الإصدار الأول مبني | `ai-service/`؛ يحتاج مفتاح مزود وإعداد `AI_SERVICE_TOKEN` |
 | n8n Workflows | ✅ 13 Workflow | جاهزة للاستيراد، تحتاج ربط Execute-Workflow يدوياً بعد الاستيراد |
 | WhatsApp Cloud API (رسمي) | 🟡 تصميم كامل | يحتاج حساب Meta Business موثّق فعلياً |
 | WhatsApp Evolution API (احتياطي/QR) | 🟡 تصميم + Workflow كامل | يحتاج نشر خادم Evolution فعلياً |
@@ -91,10 +91,10 @@ Workflows وتطبيق الأدمن **يفترضان** أن هاتين الخد�
 
 1. **بناء الـ Backend API فعلياً** يطبّق `api/openapi.yaml` حرفياً — هذا يُشغِّل كل شيء
    آخر. بدونه، كل Workflow وكل شاشة في التطبيق مجرد واجهة بلا وظيفة.
-2. **بناء خدمة الـ AI** (`/nlu` و`/compose-reply`) — أبسط مسار عملي: نداء إلى Claude أو
-   نموذج مشابه بموجّه (prompt) يُلزمه بإخراج JSON منظّم لكل من الفهم والصياغة، مع تمرير
-   `grounding_data` الحقيقي كما هو موثّق في ملاحظات Workflow 02 — **بدون** السماح للنموذج
-   باختلاق أرقام لم تُرسَل إليه.
+2. **إعداد خدمة الـ AI** (`/nlu` و`/compose-reply`) — الإصدار الأول موجود في `ai-service/`
+   ويستخدم مخرجات JSON منظمة وgrounding data صريحاً. المتبقي هو وضع مفتاح المزود وإعداد
+   `AI_SERVICE_TOKEN` ثم اختباره مع n8n؛ الخدمة تفشل مغلقاً عند غياب الإعدادات ولا تختلق
+   أرقاماً أو مخزوناً.
 3. **إنشاء أول حساب أدمن** يدوياً (راجع الفجوة 2.1) بعد بناء الـ Backend.
 4. **حسابات المنصات الفعلية**: Meta Business verification لـ WhatsApp Cloud API +
    Facebook App review لصلاحيات الصفحة/Instagram + (اختياري) نشر Evolution API + (اختياري)
