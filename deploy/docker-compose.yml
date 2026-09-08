@@ -97,6 +97,23 @@ services:
     expose:
       - "6379"
 
+  whatsapp-ui:
+    build:
+      context: ../whatsapp-ui
+    restart: unless-stopped
+    environment:
+      EVOLUTION_API_URL: http://evolution-api:8080
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      EVOLUTION_INSTANCE: matjar
+      UI_USER: ${WHATSAPP_UI_USER}
+      UI_PASSWORD: ${WHATSAPP_UI_PASSWORD}
+    ports:
+      - "127.0.0.1:8020:8020"
+    networks: [matjar]
+    depends_on:
+      evolution-api:
+        condition: service_healthy
+
 volumes:
   matjar_postgres_data:
   evolution_instances:
